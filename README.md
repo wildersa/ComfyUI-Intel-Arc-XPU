@@ -71,33 +71,29 @@ The custom node in this repository automatically registers an `'xpu'` backend wh
 
 ---
 
-### Improvement 2 — `comfy-aimdo-xpu` Built for Windows (`DynamicVRAM`)
+### Improvement 2 — Prebuilt Windows `comfy-aimdo-xpu` (`DynamicVRAM`)
 
-The official `comfy-aimdo` provides DynamicVRAM support primarily for CUDA, and there is no official prebuilt Windows package for Intel Arc (`xpu`). To enable VBAR virtual allocation and intelligent model eviction on Intel Arc GPUs under Windows:
+Upstream `comfy-aimdo` focuses DynamicVRAM support on CUDA, and there was no official prebuilt Windows wheel for Intel Arc (`xpu`). Rather than shipping build instructions, we compiled the upstream [`xiangyuT/comfy-aimdo-xpu`](https://github.com/xiangyuT/comfy-aimdo-xpu) project (`intel/llm-scaler` reference, commit `3bc6afbcb92e10a2d4737e79d170190ed787bf89`) for Windows ourselves — building Microsoft Detours and `oneapi-src/level-zero` alongside it and adding the missing `dxcore.lib` link needed on Windows SDK `10.0.26100.0` so `aimdo_xpu.dll` compiles cleanly — and uploaded the ready-to-install `.whl` to **Release `v0.1.0`**:
 
-1. We cloned the [`xiangyuT/comfy-aimdo-xpu`](https://github.com/xiangyuT/comfy-aimdo-xpu) fork at the exact commit `3bc6afbcb92e10a2d4737e79d170190ed787bf89` (the same commit referenced by the official [`intel/llm-scaler`](https://github.com/intel/llm-scaler) project), along with `oneapi-src/level-zero` and `microsoft/Detours`.
-2. We built **Microsoft Detours** (`scripts\build-windows-detours.cmd` -> `detours.lib`).
-3. We updated `scripts\build-windows-xpu.cmd` (line 134) to add the **`dxcore.lib`** library, required with Windows SDK `10.0.26100.0` to resolve `DXCoreCreateAdapterFactory`, which is used in `src-win\shmem-detect.c`.
-4. We built `aimdo_xpu.dll` and packaged the Windows wheel (`abi3`):
-   - **Wheel (Release `v0.1.0`):** `comfy_aimdo-0.6.0+xpu.g3bc6afb.dirty-cp39-abi3-win_amd64.whl` (`157,964` bytes)
-   - **Wheel SHA-256:** `68dde78cae9655a2ced31f2595e43b7e0026341ac6d6e7172226a5377820aaae`
-   - **Bundled `aimdo_xpu.dll` SHA-256:** `B1850393799D9F1D3E70A47754564737173F0ADEF4A699CA3B41F27E5ABA1CA3`
+- **Prebuilt Wheel (Release `v0.1.0`):** `comfy_aimdo-0.6.0+xpu.g3bc6afb.dirty-cp39-abi3-win_amd64.whl` (`157,964` bytes)
+- **Wheel SHA-256:** `68dde78cae9655a2ced31f2595e43b7e0026341ac6d6e7172226a5377820aaae`
+- **Bundled `aimdo_xpu.dll` SHA-256:** `B1850393799D9F1D3E70A47754564737173F0ADEF4A699CA3B41F27E5ABA1CA3`
 
 > [!IMPORTANT]
 > **Mandatory requirement: `torch==2.13.0+xpu` (`sycl9.dll`)**
 >
-> The `aimdo_xpu.dll` built with Intel oneAPI 2026.0 depends on the **`sycl9.dll`** runtime (`intel-sycl-rt==2026.0.0`).
-> If you are still using `torch==2.12.1+xpu` (`sycl8.dll`), the XPU extension will fail to load until you upgrade PyTorch XPU to `2.13.0+xpu`.
+> The prebuilt `aimdo_xpu.dll` links against Intel oneAPI 2026.0's **`sycl9.dll`** runtime (`intel-sycl-rt==2026.0.0`).
+> If you are still on `torch==2.12.1+xpu` (`sycl8.dll`), the XPU extension will fail to load until you upgrade PyTorch XPU to `2.13.0+xpu`.
 
 Additionally, ComfyUI's `main.py` only enables DynamicVRAM automatically on NVIDIA/ROCm GPUs (`dynamic_vram_supported()`), so on Intel Arc you **must explicitly pass** `--enable-dynamic-vram` at startup (we also recommend `--reserve-vram 4`).
 
 ---
 
-## Installation
+## How to Use (Adapted `.py` Backend + Prebuilt `.whl`)
 
-### 1. Install the Custom Node (`comfy_kitchen` `'xpu'` Backend)
+### 1. Install the Adapted `.py` Custom Node (`__init__.py` + `xpu_backend.py`)
 
-From your ComfyUI directory (`<ComfyUI_Root>`), clone this repository into `custom_nodes`:
+From your ComfyUI directory (`<ComfyUI_Root>`), clone this repository into `custom_nodes` so ComfyUI automatically loads our `'xpu'` backend and quantization hooks at startup:
 
 ```powershell
 cd "<ComfyUI_Root>\custom_nodes"
@@ -142,24 +138,6 @@ When starting ComfyUI, check the log (`comfyui.log`) for:
 ```powershell
 "<ComfyUI_Root>\.venv\Scripts\python.exe" "<ComfyUI_Root>\custom_nodes\ComfyUI-Intel-Arc-XPU\test_xpu_backend.py"
 ```
-
----
-
-## Building `comfy-aimdo-xpu` from Source (Windows)
-
-For auditing and reproducibility under the GPL-3.0 license:
-
-1. Install the prerequisites:
-   - **Visual Studio Build Tools / MSVC (`cl.exe`)** + **Windows SDK** (`10.0.26100.0` tested)
-   - **Intel oneAPI Base Toolkit 2026.0** (`dpcpp` / `icx` / `sycl9` / `libur_win`)
-   - **Python 3.13** with `setuptools` and `wheel`
-2. Clone the sources:
-   - `xiangyuT/comfy-aimdo-xpu` at `3bc6afbcb92e10a2d4737e79d170190ed787bf89`
-   - `oneapi-src/level-zero` into `build\level-zero-src`
-   - `microsoft/Detours` into `build\detours-src`
-3. Build Detours using `scripts\build-windows-detours.cmd`.
-4. Edit the linker invocation in `scripts\build-windows-xpu.cmd` to include `dxcore.lib` alongside the other Windows SDK `.lib` files.
-5. Run `scripts\build-windows-xpu.cmd`, validate using `scripts\test-windows-xpu-hook.cmd`, and package the wheel with `python -m pip wheel --no-build-isolation --no-deps . -w dist`.
 
 ---
 
