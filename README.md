@@ -21,9 +21,24 @@ Experimental optimizations for running **ComfyUI on Windows with Intel Arc GPUs 
 > - **Limitations and pending tests:**
 >   - Two synthetic memory-policy scripts from the upstream repository (`vbar-pageout-xpu.py` and `repro_xpu_platform_memory_policy.py`) failed their assertions (`AssertionError: []` and `AssertionError: [1]`);
 >   - The upstream `pytest` suite (`tests/test_xpu_backend.py`) has not been run in this `.venv`;
->   - Heavy video workflows (such as `wan_animate`) using **DynamicVRAM + the `'xpu'` backend** have not yet been benchmarked end to end.
+>   - Heavy video workflows (such as `WAN_Animate2`) have not yet been covered by controlled same-baseline A/B benchmarks ([`benchmarks/direct/`](./benchmarks/direct/README.md)), though an initial observational run completed cleanly ([`benchmarks/observational/`](./benchmarks/observational/2026-11-13-qwen-and-wan-animate2-analysis.md)).
 >
 > *Summary: **Experimental / early release.** Tested only on Windows 11 + Intel Arc Pro B70 + `torch==2.13.0+xpu` + ComfyUI `v0.45.3`. Works on my machine, but has not yet been broadly tested across Intel Arc GPU models or long multi-model workflows.*
+
+---
+
+## Why We Built This (The Short Story)
+
+Running large quantized models (like `qwen_image_2.1_int8_convrot` and `wan_animate_2_int8_convrot`) on **Windows + Intel Arc (`xpu`)** ran straight into two bottlenecks at once:
+
+1. **Slow `eager` fallback & temporary `FP32` memory spikes:** Because ComfyUI's `comfy_kitchen` only had CUDA/Triton accelerated backends, Intel Arc fell back to PyTorch `eager`. In that path, `int8_tensorwise` fast compute was disabled and dequantization promoted large weight tensors into temporary `float32` buffers, slowing steps down and eating hundreds of megabytes of extra VRAM per layer.
+2. **All-or-nothing VRAM loading, `XPU out of memory`, and Copy/Compute thrashing:** Without Windows DynamicVRAM (`comfy-aimdo-xpu`), heavy workflows like `WAN_Animate2` (`~15.5 GiB` diffusion model + VAE + CLIP + text encoder) tried to load completely into VRAM (`full load: True`) and repeatedly crashed with `XPU out of memory` at step `0/6` — or stalled as WDDM shuffled blocks back and forth, visible in Windows Task Manager as **Copy** bursts constantly interrupting **Compute**.
+
+To fix both walls without rewriting ComfyUI:
+
+- First, we wrote a pure-PyTorch `'xpu'` backend (`xpu_backend.py`) that dequantizes directly into `bf16`/`fp16`, chunks ConvRot rotations to keep temporary scratch memory bounded, and unlocks `int8_tensorwise` compute (`torch._int_mm` / low-precision XMX `F.linear`) — immediately yielding a ~19% speedup on `VNCCS_PoseStudio_QI2.1`.
+- Next, we compiled `comfy-aimdo-xpu` from source for Windows (fixing a missing `dxcore.lib` link against Windows SDK `10.0.26100.0`, upgrading PyTorch XPU to `2.13.0+xpu` to match `sycl9.dll`, and launching with `--enable-dynamic-vram --reserve-vram 4`) so large models could stage virtual pages instead of crashing on load.
+- With both pieces active together, `WAN_Animate2` went from crashing at step `0/6` to finishing cleanly in `370.91s` with steady GPU **Compute** utilization in Task Manager.
 
 ---
 
@@ -153,6 +168,7 @@ For auditing and reproducibility under the GPL-3.0 license:
 - [`__init__.py`](./__init__.py) — ComfyUI custom node entry point; calls `install_comfy_xpu_hooks()`.
 - [`xpu_backend.py`](./xpu_backend.py) — Implementation of the `'xpu'` backend for `comfy_kitchen` + ComfyUI hooks.
 - [`test_xpu_backend.py`](./test_xpu_backend.py) — Correctness unit tests and latency/VRAM microbenchmark.
+- [`benchmarks/`](./benchmarks/) — Dedicated benchmarks folder separating direct A/B benchmarks ([`direct/`](./benchmarks/direct/README.md), pending) from non-controlled observational analyses ([`observational/`](./benchmarks/observational/)).
 - [`LICENSE`](./LICENSE) — **GNU General Public License v3.0 (GPL-3.0)**.
 - **Windows binary (`.whl`):** available exclusively under [Releases (`v0.1.0`)](https://github.com/wildersa/ComfyUI-Intel-Arc-XPU/releases) to keep the `custom_nodes` clone clean.
 
