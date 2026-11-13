@@ -1,128 +1,128 @@
 # ComfyUI-Intel-Arc-XPU
 
-Otimizações experimentais para rodar o **ComfyUI no Windows com GPUs Intel Arc (`xpu`)** unindo duas melhorias complementares:
+Experimental optimizations for running **ComfyUI on Windows with Intel Arc GPUs (`xpu`)**, combining two complementary improvements:
 
-1. **Custom Node `comfy_kitchen` backend `'xpu'` em PyTorch puro** — acelera operações quantizadas `INT8` (`int8_tensorwise` / `convrot`) e reduz drasticamente o pico de VRAM na dequantização sem depender de CUDA/Triton.
-2. **Build Windows do `comfy-aimdo-xpu` (Release `v0.1.0`)** — habilita suporte a **DynamicVRAM** no Windows para Intel Arc (`xpu`) via Level Zero + Microsoft Detours hook em cima do `torch==2.13.0+xpu` (`sycl9.dll`).
+1. **Custom Node with a pure PyTorch `comfy_kitchen` `'xpu'` backend** — accelerates quantized `INT8` operations (`int8_tensorwise` / `convrot`) and drastically reduces peak VRAM usage during dequantization without relying on CUDA/Triton.
+2. **Windows build of `comfy-aimdo-xpu` (Release `v0.1.0`)** — enables **DynamicVRAM** support on Windows for Intel Arc (`xpu`) through Level Zero + Microsoft Detours hooks on top of `torch==2.13.0+xpu` (`sycl9.dll`).
 
 ---
 
 > [!WARNING]
-> **AVISO IMPORTANTE / DISCLAIMER (LEIA ANTES DE USAR)**
+> **IMPORTANT NOTICE / DISCLAIMER (READ BEFORE USING)**
 >
-> **Ainda não fizemos testes o suficiente — este conjunto foi validado apenas na minha máquina ("works on my machine").**
+> **We have not performed enough testing yet — this setup has only been validated on my machine ("works on my machine").**
 >
-> - **Hardware & SO testados:** Windows 11, GPU **Intel Arc Pro B70 (`xpu`)**, **Python 3.13 (`cp313`)**, **PyTorch `2.13.0+xpu`** + **`torchvision 0.28.0+xpu`** (`intel-sycl-rt==2026.0.0` / `sycl9.dll`), **ComfyUI `v0.45.3`**.
-> - **O que já foi testado e passou:**
->   - `test_xpu_backend.py` (`ALL TESTS PASSED`, incluindo microbenchmark INT8 e redução de pico de VRAM);
->   - Workflow real `VNCCS_PoseStudio_QI2.1` (`qwen_image_2.1_int8_convrot.safetensors`, `1024x1024`, `steps=25`, LoRA ativo) com ganho de **~19%** no sampler (`37s` -> `31s`, `1,51–1,52 s/it` -> `1,20 s/it` steady loop / `1,25 s/it` média);
->   - Boot real do ComfyUI Desktop com log `DynamicVRAM support detected and enabled`;
->   - Testes de fumaça e ciclo de vida do hook Windows/VBAR (`scripts\test-windows-xpu-hook.cmd`, `run_windows_ur_hook_smoke.py`, `run_xpu_vbar_resident_growth.py`, `run_xpu_vbar_retirement_safety.py` default & async 100 ciclos, `run_xpu_vbar_consumer_lifecycle.py`).
-> - **Limitações e testes pendentes:**
->   - Dois scripts sintéticos de política de memória do repositório upstream (`vbar-pageout-xpu.py` e `repro_xpu_platform_memory_policy.py`) falharam em suas asserções (`AssertionError: []` e `AssertionError: [1]`);
->   - A suíte `pytest` upstream (`tests/test_xpu_backend.py`) não foi executada nesse `.venv`;
->   - Workflows pesados de vídeo (como `wan_animate`) com **DynamicVRAM + backend `'xpu'`** ainda não foram benchmarkados ponta a ponta.
+> - **Tested hardware & OS:** Windows 11, **Intel Arc Pro B70 GPU (`xpu`)**, **Python 3.13 (`cp313`)**, **PyTorch `2.13.0+xpu`** + **`torchvision 0.28.0+xpu`** (`intel-sycl-rt==2026.0.0` / `sycl9.dll`), **ComfyUI `v0.45.3`**.
+> - **Tests completed successfully:**
+>   - `test_xpu_backend.py` (`ALL TESTS PASSED`, including an INT8 microbenchmark and peak VRAM reduction);
+>   - Real-world `VNCCS_PoseStudio_QI2.1` workflow (`qwen_image_2.1_int8_convrot.safetensors`, `1024x1024`, `steps=25`, LoRA enabled), with a **~19%** sampler speedup (`37s` -> `31s`, `1.51–1.52 s/it` -> `1.20 s/it` steady-state loop / `1.25 s/it` average);
+>   - Actual ComfyUI Desktop startup with the log message `DynamicVRAM support detected and enabled`;
+>   - Windows/VBAR hook smoke and lifecycle tests (`scripts\test-windows-xpu-hook.cmd`, `run_windows_ur_hook_smoke.py`, `run_xpu_vbar_resident_growth.py`, `run_xpu_vbar_retirement_safety.py` in default and async modes for 100 cycles, `run_xpu_vbar_consumer_lifecycle.py`).
+> - **Limitations and pending tests:**
+>   - Two synthetic memory-policy scripts from the upstream repository (`vbar-pageout-xpu.py` and `repro_xpu_platform_memory_policy.py`) failed their assertions (`AssertionError: []` and `AssertionError: [1]`);
+>   - The upstream `pytest` suite (`tests/test_xpu_backend.py`) has not been run in this `.venv`;
+>   - Heavy video workflows (such as `wan_animate`) using **DynamicVRAM + the `'xpu'` backend** have not yet been benchmarked end to end.
 >
-> *English summary: **Experimental / early release.** Tested only on Windows 11 + Intel Arc Pro B70 + `torch==2.13.0+xpu` + ComfyUI `v0.45.3`. Works on my machine, not yet broadly tested across all Intel Arc SKUs or long multi-model workflows.*
+> *Summary: **Experimental / early release.** Tested only on Windows 11 + Intel Arc Pro B70 + `torch==2.13.0+xpu` + ComfyUI `v0.45.3`. Works on my machine, but has not yet been broadly tested across Intel Arc GPU models or long multi-model workflows.*
 
 ---
 
-## O que fizemos e como funciona
+## What We Did and How It Works
 
-### Melhoria 1 — Backend `'xpu'` em PyTorch puro (`xpu_backend.py` + `__init__.py`)
+### Improvement 1 — Pure PyTorch `'xpu'` Backend (`xpu_backend.py` + `__init__.py`)
 
-Por padrão, o `comfy_kitchen` prioriza backends CUDA/Triton e cai no fallback `eager` em GPUs Intel Arc (`xpu`). No fallback `eager`, diversas dequantizações promovem pesos para `float32` temporariamente na VRAM e o ComfyUI desabilita caminhos rápidos `int8_tensorwise` em XPU.
+By default, `comfy_kitchen` prioritizes CUDA/Triton backends and falls back to `eager` on Intel Arc GPUs (`xpu`). With the `eager` fallback, several dequantization operations temporarily promote weights to `float32` in VRAM, and ComfyUI disables fast `int8_tensorwise` paths on XPU.
 
-O custom node deste repositório registra automaticamente um backend `'xpu'` na inicialização do ComfyUI (`__init__.py` -> `install_comfy_xpu_hooks()`):
+The custom node in this repository automatically registers an `'xpu'` backend when ComfyUI starts (`__init__.py` -> `install_comfy_xpu_hooks()`):
 
-- **Registro com prioridade no `comfy_kitchen.registry`:** insere o backend `'xpu'` imediatamente antes de `triton`/`eager`.
-- **Dequantização sem explosão para FP32 (`_dequantize_simple_to`, `dequantize_int8_simple`, `dequantize_int8_simple_dtype`):** converte pesos quantizados diretamente para o `dtype` alvo (`bfloat16` ou `float16`), cortando pela metade o pico de VRAM temporária em relação ao `eager`.
-- **Un-rotation ConvRot em chunks (`dequantize_int8_convrot_weight`, `dequantize_int8_convrot_weight_dtype`):** processa a etapa FP32 em blocos limitados por `_FP32_CHUNK_ELEMS = 8 << 20` (~32 MB de scratch) antes de retornar para `bf16`/`fp16`.
-- **Matmul híbrido `int8_linear`:**
-  - Quando `M >= K` (camadas dominadas por tokens) e entrada/saída estão em `fp16`/`bf16`, usa dequantização em baixa precisão + `torch.nn.functional.linear` nos motores XMX da Intel Arc;
-  - Quando `M < K`, usa `torch._int_mm(a, weight_nk.T)` sem cópia extra da transposta (com padding automático para múltiplos de 8 quando necessário) e reescala FP32 em chunks acima de `_RESCALE_CHUNK_ELEMS = 16 << 20`.
-- **Desbloqueio de quantização nativa no ComfyUI (`install_comfy_xpu_hooks`):** aplica patch idempotente em:
+- **Priority registration in `comfy_kitchen.registry`:** inserts the `'xpu'` backend immediately before `triton`/`eager`.
+- **Dequantization without FP32 memory spikes (`_dequantize_simple_to`, `dequantize_int8_simple`, `dequantize_int8_simple_dtype`):** converts quantized weights directly to the target `dtype` (`bfloat16` or `float16`), halving temporary peak VRAM usage compared with `eager`.
+- **Chunked ConvRot un-rotation (`dequantize_int8_convrot_weight`, `dequantize_int8_convrot_weight_dtype`):** processes the FP32 stage in blocks limited by `_FP32_CHUNK_ELEMS = 8 << 20` (~32 MB of scratch memory) before converting back to `bf16`/`fp16`.
+- **Hybrid `int8_linear` matrix multiplication:**
+  - When `M >= K` (token-dominated layers) and input/output are in `fp16`/`bf16`, uses low-precision dequantization + `torch.nn.functional.linear` on Intel Arc's XMX engines;
+  - When `M < K`, uses `torch._int_mm(a, weight_nk.T)` without an extra transpose copy (with automatic padding to multiples of 8 when necessary) and performs FP32 rescaling in chunks above `_RESCALE_CHUNK_ELEMS = 16 << 20`.
+- **Enabling native quantization in ComfyUI (`install_comfy_xpu_hooks`):** applies idempotent patches to:
   - `comfy.model_management.supports_int8_compute`;
-  - `comfy.ops.get_disabled_quant_formats` (habilita `int8_tensorwise` no XPU, mantendo `convrot_w4a4` e `_GROUPED_INT8_FORMATS` desabilitados);
+  - `comfy.ops.get_disabled_quant_formats` (enables `int8_tensorwise` on XPU while keeping `convrot_w4a4` and `_GROUPED_INT8_FORMATS` disabled);
   - `TensorWiseINT8Layout.supports_fast_matmul`.
 
-#### Resultados medidos (Melhoria 1 isolada)
+#### Measured Results (Improvement 1 Only)
 
-| Teste | Baseline (`eager` / `torch==2.12.1+xpu`) | Com backend `'xpu'` | Ganho |
+| Test | Baseline (`eager` / `torch==2.12.1+xpu`) | With `'xpu'` backend | Improvement |
 | --- | --- | --- | --- |
-| `test_xpu_backend.py` (`M=1024, K=5120, N=13824`) | `5.69 ms` / pico `513.0 MB` | `1.58 ms` / pico `123.0 MB` | **~3.6x** mais rápido, **-76%** pico VRAM |
-| Dequant peak VRAM (`test_xpu_backend.py`) | `540.0 MB` | `272.0 MB` | **~50%** menos VRAM temporária |
-| Workflow `VNCCS_PoseStudio_QI2.1` (`1024x1024`, `25` steps, LoRA) | `1,51–1,52 s/it` (`37s` sampler) | `1,20 s/it` steady (`1,25 s/it` média, `31s` sampler) | **~19%** mais rápido |
+| `test_xpu_backend.py` (`M=1024, K=5120, N=13824`) | `5.69 ms` / peak `513.0 MB` | `1.58 ms` / peak `123.0 MB` | **~3.6x** faster, **-76%** peak VRAM |
+| Peak VRAM during dequantization (`test_xpu_backend.py`) | `540.0 MB` | `272.0 MB` | **~50%** less temporary VRAM |
+| `VNCCS_PoseStudio_QI2.1` workflow (`1024x1024`, `25` steps, LoRA) | `1.51–1.52 s/it` (`37s` sampler) | `1.20 s/it` steady state (`1.25 s/it` average, `31s` sampler) | **~19%** faster |
 
 ---
 
-### Melhoria 2 — `comfy-aimdo-xpu` compilado para Windows (`DynamicVRAM`)
+### Improvement 2 — `comfy-aimdo-xpu` Built for Windows (`DynamicVRAM`)
 
-O `comfy-aimdo` oficial traz suporte de DynamicVRAM focado em CUDA, e no Windows não existe pacote pré-compilado oficial para Intel Arc (`xpu`). Para habilitar alocação virtual VBAR e eviction inteligente de modelos em GPUs Intel Arc no Windows:
+The official `comfy-aimdo` provides DynamicVRAM support primarily for CUDA, and there is no official prebuilt Windows package for Intel Arc (`xpu`). To enable VBAR virtual allocation and intelligent model eviction on Intel Arc GPUs under Windows:
 
-1. Clonamos o fork [`xiangyuT/comfy-aimdo-xpu`](https://github.com/xiangyuT/comfy-aimdo-xpu) no commit exato `3bc6afbcb92e10a2d4737e79d170190ed787bf89` (mesmo commit referenciado pelo projeto oficial [`intel/llm-scaler`](https://github.com/intel/llm-scaler)), junto de `oneapi-src/level-zero` e `microsoft/Detours`.
-2. Compilamos o **Microsoft Detours** (`scripts\build-windows-detours.cmd` -> `detours.lib`).
-3. Ajustamos o script `scripts\build-windows-xpu.cmd` (linha 134) adicionando a biblioteca **`dxcore.lib`**, necessária no Windows SDK `10.0.26100.0` para resolver `DXCoreCreateAdapterFactory` usado em `src-win\shmem-detect.c`.
-4. Compilamos a `aimdo_xpu.dll` e empacotamos o wheel Windows (`abi3`):
-   - **Wheel (Release `v0.1.0`):** `comfy_aimdo-0.6.0+xpu.g3bc6afb.dirty-cp39-abi3-win_amd64.whl` (`157.964` bytes)
-   - **SHA-256 do wheel:** `68dde78cae9655a2ced31f2595e43b7e0026341ac6d6e7172226a5377820aaae`
-   - **SHA-256 da `aimdo_xpu.dll` embutida:** `B1850393799D9F1D3E70A47754564737173F0ADEF4A699CA3B41F27E5ABA1CA3`
+1. We cloned the [`xiangyuT/comfy-aimdo-xpu`](https://github.com/xiangyuT/comfy-aimdo-xpu) fork at the exact commit `3bc6afbcb92e10a2d4737e79d170190ed787bf89` (the same commit referenced by the official [`intel/llm-scaler`](https://github.com/intel/llm-scaler) project), along with `oneapi-src/level-zero` and `microsoft/Detours`.
+2. We built **Microsoft Detours** (`scripts\build-windows-detours.cmd` -> `detours.lib`).
+3. We updated `scripts\build-windows-xpu.cmd` (line 134) to add the **`dxcore.lib`** library, required with Windows SDK `10.0.26100.0` to resolve `DXCoreCreateAdapterFactory`, which is used in `src-win\shmem-detect.c`.
+4. We built `aimdo_xpu.dll` and packaged the Windows wheel (`abi3`):
+   - **Wheel (Release `v0.1.0`):** `comfy_aimdo-0.6.0+xpu.g3bc6afb.dirty-cp39-abi3-win_amd64.whl` (`157,964` bytes)
+   - **Wheel SHA-256:** `68dde78cae9655a2ced31f2595e43b7e0026341ac6d6e7172226a5377820aaae`
+   - **Bundled `aimdo_xpu.dll` SHA-256:** `B1850393799D9F1D3E70A47754564737173F0ADEF4A699CA3B41F27E5ABA1CA3`
 
 > [!IMPORTANT]
-> **Requisito obrigatório: `torch==2.13.0+xpu` (`sycl9.dll`)**
+> **Mandatory requirement: `torch==2.13.0+xpu` (`sycl9.dll`)**
 >
-> A `aimdo_xpu.dll` compilada com o Intel oneAPI 2026.0 depende do runtime **`sycl9.dll`** (`intel-sycl-rt==2026.0.0`).
-> Se você ainda estiver no `torch==2.12.1+xpu` (`sycl8.dll`), o carregamento da extensão XPU irá falhar até atualizar o PyTorch XPU para `2.13.0+xpu`.
+> The `aimdo_xpu.dll` built with Intel oneAPI 2026.0 depends on the **`sycl9.dll`** runtime (`intel-sycl-rt==2026.0.0`).
+> If you are still using `torch==2.12.1+xpu` (`sycl8.dll`), the XPU extension will fail to load until you upgrade PyTorch XPU to `2.13.0+xpu`.
 
-Além disso, o `main.py` do ComfyUI só ativa DynamicVRAM automaticamente em GPUs NVIDIA/ROCm (`dynamic_vram_supported()`), portanto em Intel Arc você **precisa passar explicitamente** `--enable-dynamic-vram` na inicialização (recomendamos também `--reserve-vram 4`).
+Additionally, ComfyUI's `main.py` only enables DynamicVRAM automatically on NVIDIA/ROCm GPUs (`dynamic_vram_supported()`), so on Intel Arc you **must explicitly pass** `--enable-dynamic-vram` at startup (we also recommend `--reserve-vram 4`).
 
 ---
 
-## Como instalar
+## Installation
 
-### 1. Instalar o Custom Node (`comfy_kitchen` backend `'xpu'`)
+### 1. Install the Custom Node (`comfy_kitchen` `'xpu'` Backend)
 
-No diretório do seu ComfyUI (`<ComfyUI_Root>`), clone este repositório dentro de `custom_nodes`:
+From your ComfyUI directory (`<ComfyUI_Root>`), clone this repository into `custom_nodes`:
 
 ```powershell
 cd "<ComfyUI_Root>\custom_nodes"
 git clone https://github.com/wildersa/ComfyUI-Intel-Arc-XPU.git
 ```
 
-### 2. Atualizar o `.venv` do ComfyUI para `torch==2.13.0+xpu`
+### 2. Upgrade ComfyUI's `.venv` to `torch==2.13.0+xpu`
 
-Faça backup do seu ambiente atual antes de alterar pacotes:
+Back up your current environment before changing packages:
 
 ```powershell
 "<ComfyUI_Root>\.venv\Scripts\python.exe" -m pip freeze > venv_backup_freeze.txt
 "<ComfyUI_Root>\.venv\Scripts\python.exe" -m pip install --upgrade torch==2.13.0+xpu torchvision==0.28.0+xpu --index-url https://download.pytorch.org/whl/xpu
 ```
 
-*(Ajuste `torchaudio` ou outros pacotes se o seu ambiente utilizar versões específicas.)*
+*(Adjust `torchaudio` or other packages if your environment requires specific versions.)*
 
-### 3. Instalar o wheel `comfy-aimdo-xpu` da Release `v0.1.0`
+### 3. Install the `comfy-aimdo-xpu` Wheel from Release `v0.1.0`
 
-Baixe `comfy_aimdo-0.6.0+xpu.g3bc6afb.dirty-cp39-abi3-win_amd64.whl` na página de [Releases](https://github.com/wildersa/ComfyUI-Intel-Arc-XPU/releases) e instale no `.venv` do ComfyUI:
+Download `comfy_aimdo-0.6.0+xpu.g3bc6afb.dirty-cp39-abi3-win_amd64.whl` from the [Releases](https://github.com/wildersa/ComfyUI-Intel-Arc-XPU/releases) page and install it in ComfyUI's `.venv`:
 
 ```powershell
-"<ComfyUI_Root>\.venv\Scripts\python.exe" -m pip install --force-reinstall --no-deps "<Caminho_Download>\comfy_aimdo-0.6.0+xpu.g3bc6afb.dirty-cp39-abi3-win_amd64.whl"
+"<ComfyUI_Root>\.venv\Scripts\python.exe" -m pip install --force-reinstall --no-deps "<Download_Path>\comfy_aimdo-0.6.0+xpu.g3bc6afb.dirty-cp39-abi3-win_amd64.whl"
 "<ComfyUI_Root>\.venv\Scripts\python.exe" -m pip check
 ```
 
-### 4. Configurar as flags de inicialização do ComfyUI
+### 4. Configure ComfyUI Startup Flags
 
-Adicione as flags abaixo aos argumentos de lançamento do ComfyUI (ou no `launchArgs` do ComfyUI Desktop):
+Add the following flags to ComfyUI's launch arguments (or to `launchArgs` in ComfyUI Desktop):
 
 ```text
 --enable-dynamic-vram --reserve-vram 4
 ```
 
-Ao iniciar o ComfyUI, confira no log (`comfyui.log`) se aparece:
+When starting ComfyUI, check the log (`comfyui.log`) for:
 
 - `DynamicVRAM support detected and enabled`
-- `Native ops: int8_tensorwise` / registro do backend `'xpu'` no `comfy_kitchen`
+- `Native ops: int8_tensorwise` / `'xpu'` backend registration in `comfy_kitchen`
 
-### 5. Rodar o autoteste do backend `'xpu'` (opcional)
+### 5. Run the `'xpu'` Backend Self-Test (Optional)
 
 ```powershell
 "<ComfyUI_Root>\.venv\Scripts\python.exe" "<ComfyUI_Root>\custom_nodes\ComfyUI-Intel-Arc-XPU\test_xpu_backend.py"
@@ -130,38 +130,38 @@ Ao iniciar o ComfyUI, confira no log (`comfyui.log`) se aparece:
 
 ---
 
-## Como compilar o `comfy-aimdo-xpu` do zero (Windows)
+## Building `comfy-aimdo-xpu` from Source (Windows)
 
-Para auditoria e reprodutibilidade sob a licença GPL-3.0:
+For auditing and reproducibility under the GPL-3.0 license:
 
-1. Pré-requisitos instalados:
-   - **Visual Studio Build Tools / MSVC (`cl.exe`)** + **Windows SDK** (`10.0.26100.0` testado)
+1. Install the prerequisites:
+   - **Visual Studio Build Tools / MSVC (`cl.exe`)** + **Windows SDK** (`10.0.26100.0` tested)
    - **Intel oneAPI Base Toolkit 2026.0** (`dpcpp` / `icx` / `sycl9` / `libur_win`)
-   - **Python 3.13** com `setuptools` e `wheel`
-2. Clonar as fontes:
-   - `xiangyuT/comfy-aimdo-xpu` em `3bc6afbcb92e10a2d4737e79d170190ed787bf89`
-   - `oneapi-src/level-zero` em `build\level-zero-src`
-   - `microsoft/Detours` em `build\detours-src`
-3. Compilar Detours via `scripts\build-windows-detours.cmd`.
-4. Editar `scripts\build-windows-xpu.cmd` na chamada do linker para incluir `dxcore.lib` junto às demais `.lib` do Windows SDK.
-5. Executar `scripts\build-windows-xpu.cmd`, validar com `scripts\test-windows-xpu-hook.cmd` e empacotar com `python -m pip wheel --no-build-isolation --no-deps . -w dist`.
+   - **Python 3.13** with `setuptools` and `wheel`
+2. Clone the sources:
+   - `xiangyuT/comfy-aimdo-xpu` at `3bc6afbcb92e10a2d4737e79d170190ed787bf89`
+   - `oneapi-src/level-zero` into `build\level-zero-src`
+   - `microsoft/Detours` into `build\detours-src`
+3. Build Detours using `scripts\build-windows-detours.cmd`.
+4. Edit the linker invocation in `scripts\build-windows-xpu.cmd` to include `dxcore.lib` alongside the other Windows SDK `.lib` files.
+5. Run `scripts\build-windows-xpu.cmd`, validate using `scripts\test-windows-xpu-hook.cmd`, and package the wheel with `python -m pip wheel --no-build-isolation --no-deps . -w dist`.
 
 ---
 
-## Estrutura do repositório
+## Repository Structure
 
-- [`__init__.py`](./__init__.py) — Ponto de entrada do custom node no ComfyUI; chama `install_comfy_xpu_hooks()`.
-- [`xpu_backend.py`](./xpu_backend.py) — Implementação do backend `'xpu'` para `comfy_kitchen` + hooks do ComfyUI.
-- [`test_xpu_backend.py`](./test_xpu_backend.py) — Testes unitários de corretude e microbenchmark de latência/VRAM.
-- [`LICENSE`](./LICENSE) — Licença **GNU General Public License v3.0 (GPL-3.0)**.
-- **Binário Windows (`.whl`):** publicado exclusivamente em [Releases (`v0.1.0`)](https://github.com/wildersa/ComfyUI-Intel-Arc-XPU/releases) para manter o clone de `custom_nodes` limpo.
+- [`__init__.py`](./__init__.py) — ComfyUI custom node entry point; calls `install_comfy_xpu_hooks()`.
+- [`xpu_backend.py`](./xpu_backend.py) — Implementation of the `'xpu'` backend for `comfy_kitchen` + ComfyUI hooks.
+- [`test_xpu_backend.py`](./test_xpu_backend.py) — Correctness unit tests and latency/VRAM microbenchmark.
+- [`LICENSE`](./LICENSE) — **GNU General Public License v3.0 (GPL-3.0)**.
+- **Windows binary (`.whl`):** available exclusively under [Releases (`v0.1.0`)](https://github.com/wildersa/ComfyUI-Intel-Arc-XPU/releases) to keep the `custom_nodes` clone clean.
 
 ---
 
-## Créditos e Licença
+## Credits and License
 
-- Distribuído sob a licença **GPL-3.0** ([`LICENSE`](./LICENSE)), em conformidade com o `comfy-aimdo` / `comfy-aimdo-xpu`.
-- Créditos dos projetos upstream:
+- Distributed under the **GPL-3.0** license ([`LICENSE`](./LICENSE)), in compliance with `comfy-aimdo` / `comfy-aimdo-xpu`.
+- Credits to the upstream projects:
   - [`xiangyuT/comfy-aimdo-xpu`](https://github.com/xiangyuT/comfy-aimdo-xpu) (commit `3bc6afbcb92e10a2d4737e79d170190ed787bf89`)
   - [`intel/llm-scaler`](https://github.com/intel/llm-scaler)
   - [`Comfy-Org/comfy-aimdo`](https://github.com/Comfy-Org/comfy-aimdo)
