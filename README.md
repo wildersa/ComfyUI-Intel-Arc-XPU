@@ -189,15 +189,15 @@ DynamicVRAM support detected and enabled
 
 ## Benchmarks & Telemetry
 
-Observational reference runs recorded on **Windows 11 (`Intel Arc Pro B70`, `torch==2.13.0+xpu`)** *(real session logs, not controlled single-variable A/B runs)*:
+Reference timings recorded on **Windows 11 (`Intel Arc Pro B70`, `torch==2.13.0+xpu`)**:
 
-| Workflow / Model | Config / Resolution | Before / Baseline | With `OmniXPU` + `DynamicVRAM` |
+| Workflow | Config | Baseline / Prior | With `OmniXPU` + `DynamicVRAM` |
 | --- | --- | --- | --- |
-| **`QwenImage21`** (`qwen_image_2.1_int8_convrot`) | `25` steps | `61.35s` (no DynamicVRAM) | **`24.44s`–`28.77s`** warm (`42.22s`–`43.67s` cold) |
-| **`WAN_Animate2`** (`wan_animate_2_int8_convrot`, ~15.5 GiB) | `2 × 6` steps | `XPU out of memory` at step `0/6` (3 attempts) | **`370.91s`** completed (**0 OOMs**) |
-| **`MiniMax H3 Ref2VA`** (`8-step v1.1` Turbo LoRA) | `960×544`, `8s` (192 frames + audio) | — *(reference only)* | **`281.92s`–`297.45s`** (`fp8_scaled`, `torch`) · `305.14s` (`int8_convrot`, `cute`) |
+| **`QwenImage21`** | `25` steps, `int8_convrot` | `61.35s` | **`24.44s`–`28.77s`** warm |
+| **`WAN_Animate2`** | `2 × 6` steps, `int8_convrot` | `XPU OOM` at step `0/6` | **`370.91s`** (0 OOMs) |
+| **`MiniMax H3 Ref2VA`** | `8` steps turbo, `960×544`, `8s` + audio | — *(reference)* | **`281.92s`–`297.45s`** · [sample MP4](./benchmarks/assets/minimax_h3_ref2va_8s_b70.mp4) |
 
-See [`benchmarks/observational/2026-11-14-omnixpu-reference-timings.md`](./benchmarks/observational/2026-11-14-omnixpu-reference-timings.md) and [`benchmarks/`](./benchmarks/) for full stage breakdowns and methodology notes.
+*(Observational session timings; full breakdown and notes in [`benchmarks/README.md`](./benchmarks/README.md).)*
 
 ---
 
