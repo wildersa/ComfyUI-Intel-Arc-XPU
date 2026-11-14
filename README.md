@@ -143,6 +143,38 @@ cd ComfyUI-Intel-Arc-XPU
 
 ---
 
+## Log Diagnostics & Troubleshooting
+
+If something feels slow, fails with OOM, or falls back unexpectedly, scan your `<ComfyUI>\user\comfyui.log` in PowerShell to inspect what actually loaded and ran:
+
+```powershell
+Select-String -Path "<ComfyUI>\user\comfyui.log" -Pattern "OmniXPU|comfy_kitchen backend xpu|comfy_kitchen backend triton|DynamicVRAM|aimdo|Native ops|full load:|CUTE|OMNI_ATTN_BACKEND|XPU out of memory|comfy kitchen attention"
+```
+
+### Healthy Startup Signatures
+
+You should see lines like these in `comfyui.log` when the full Intel stack is active:
+
+```text
+[OmniXPU] omni_xpu_kernel 0.2.0b3+torch213.bmg - available: sdp, norm, rotary, linear_fp8, int8, layout
+Found comfy_kitchen backend xpu: {'available': True, 'disabled': False, ...}
+aimdo_setup_hooks: native Torch XPU allocator retained; arbitrating Unified Runtime USM allocations
+DynamicVRAM support detected and enabled
+[OmniXPU] XPU RAM weight staging enabled: budget ... MiB
+```
+
+### Common Log Findings & Fixes
+
+| What appears in `comfyui.log` | Meaning | What to do |
+| --- | --- | --- |
+| `XPU out of memory` + `full load: True` (and **no** `DynamicVRAM support detected and enabled`) | ComfyUI tried to load the whole model into VRAM without DynamicVRAM staging | Add `--enable-dynamic-vram --reserve-vram 4` to your launch arguments and ensure `comfy-aimdo-xpu-runtime` is installed without conflicts. |
+| `Found comfy_kitchen backend xpu: {'available': False, ...}` or `int8_convrot` model missing `Native ops: int8_tensorwise` | Native XPU provider did not activate (wrong `.venv`, missing wheels, or conflicting `custom_nodes` patch) | Re-verify `omni_xpu_kernel` and `comfy-kitchen-xpu-runtime` in ComfyUI's Python and remove older `comfyui-xpu-backend` / duplicate `ComfyUI-OmniXPU` folders. |
+| `experimental capability-driven BMG D128 CUTE route enabled` | `OMNI_ATTN_BACKEND=cute` routed an experimental attention contract (e.g. MiniMax H3) through CUTE | If the workflow shows visual artifacts or instability, test `[Environment]::SetEnvironmentVariable("OMNI_ATTN_BACKEND", "torch", "User")` and restart ComfyUI to isolate. |
+| `Attention backend 'comfy kitchen attention' is unavailable; using PyTorch attention.` | Workflow imported from a CUDA setup requests NVIDIA-only `comfy kitchen attention` | Switch `ModelAttentionBackend` to `"pytorch attention"` (and bypass `BlockSparseAttention` if it uses CUDA-only `sol-attn`). |
+| `Found comfy_kitchen backend triton: {'available': False, 'disabled': True, 'unavailable_reason': 'Triton is unavailable by default on Windows...'}` | **Expected on Windows (false alarm)** — Triton is disabled by default on Windows | Ignore it; XPU acceleration uses the **`xpu`** backend, not `triton`. |
+
+---
+
 ## Release `v0.2.0` Wheel Assets & Checksums
 
 | File | Package / Version | SHA-256 |
