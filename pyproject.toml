@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-intel-arc-xpu"
-description = "Windows-ready Intel Arc XPU (BMG) runtime integration for ComfyUI (ComfyUI-OmniXPU + prebuilt omni_xpu_kernel, comfy-kitchen-xpu-runtime, and comfy-aimdo-xpu-runtime wheels)."
+description = "Native Intel Arc Battlemage (B70 / XPU) acceleration for ComfyUI on Windows, built from Intel llm-scaler (ComfyUI-OmniXPU, omni_xpu_kernel, comfy-kitchen-xpu-runtime, and comfy-aimdo-xpu-runtime)."
 version = "0.2.0"
 license = { file = "LICENSE" }
 dependencies = []
