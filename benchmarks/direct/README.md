@@ -1,11 +1,8 @@
 # Direct A/B Benchmarks (Pending)
 
-Controlled same-baseline benchmarks comparing **`torch==2.13.0+xpu` without improvements** against:
+Controlled single-variable benchmarks comparing stock PyTorch XPU execution (`torch==2.13.0+xpu`, without OmniXPU runtime providers) against the full **ComfyUI-Intel-Arc-XPU** (`ComfyUI-OmniXPU` + `omni_xpu_kernel` + `comfy-kitchen-xpu-runtime` + `comfy-aimdo-xpu-runtime` with `--enable-dynamic-vram --reserve-vram 4`) stack have **not been executed yet**.
 
-1. **Improvement 1 only:** `comfyui-xpu-backend` (`'xpu'` `comfy_kitchen` backend)
-2. **Improvements 1 + 2:** `comfyui-xpu-backend` + `comfy-aimdo-xpu` (`--enable-dynamic-vram --reserve-vram 4`)
-
-have **not been executed yet**.
+For real-world Windows reference timings and OOM comparisons recorded from session logs, see [`../observational/`](../observational/).
 
 ## Planned Test Protocol
 
