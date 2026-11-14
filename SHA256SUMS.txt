@@ -1,0 +1,3 @@
+a5f3d152bce545c517a2e8f1db958c3c14d67238e7467cfa89bbbb859cb9fd25  omni_xpu_kernel-0.2.0b3+torch213.bmg-cp313-cp313-win_amd64.whl
+638756e43526542b625d5a81717bc0721f503e53240416479b42922cde52c605  comfy_kitchen_xpu_runtime-0.2.41-py3-none-any.whl
+6f962d5bdc1f6be61e9ee1d4654b846ff3edea31e4c4fc4640ded6a405756981  comfy_aimdo_xpu_runtime-0.6.0-cp39-abi3-win_amd64.whl

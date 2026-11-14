@@ -1,7 +1,10 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
 *.whl
+wheels/
+.venv/
 build/
 dist/
 *.egg-info/

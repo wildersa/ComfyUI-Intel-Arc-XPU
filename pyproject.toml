@@ -1,0 +1,25 @@
+[project]
+name = "comfyui-intel-arc-xpu"
+description = "Windows-ready Intel Arc XPU (BMG) runtime integration for ComfyUI (ComfyUI-OmniXPU + prebuilt omni_xpu_kernel, comfy-kitchen-xpu-runtime, and comfy-aimdo-xpu-runtime wheels)."
+version = "0.2.0"
+license = { file = "LICENSE" }
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+]
+keywords = ["comfyui", "intel", "arc", "xpu", "bmg", "dynamicvram", "omnixpu"]
+
+[project.urls]
+Repository = "https://github.com/wildersa/ComfyUI-Intel-Arc-XPU"
+Documentation = "https://github.com/wildersa/ComfyUI-Intel-Arc-XPU#readme"
+"Bug Tracker" = "https://github.com/wildersa/ComfyUI-Intel-Arc-XPU/issues"
+
+[tool.comfy]
+PublisherId = "wildersa"
+DisplayName = "ComfyUI Intel Arc XPU (OmniXPU Windows)"
+NodeIds = [
+    "OmniXPUStatus",
+]
