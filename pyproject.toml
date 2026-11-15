@@ -1,14 +1,13 @@
 [project]
 name = "comfyui-intel-arc-xpu"
 description = "Native Intel Arc Battlemage (B70 / XPU) acceleration for ComfyUI on Windows, built from Intel llm-scaler (ComfyUI-OmniXPU, omni_xpu_kernel, comfy-kitchen-xpu-runtime, and comfy-aimdo-xpu-runtime)."
-version = "0.2.0"
+version = "0.2.1"
 requires-python = ">=3.13,<3.14"
 license = { file = "LICENSE" }
 dependencies = []
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: Microsoft :: Windows",
-    "Environment :: GPU :: Intel Arc",
     "License :: OSI Approved :: Apache Software License",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
 ]
