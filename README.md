@@ -108,9 +108,10 @@ Reference timings recorded on **Windows 11 (`Intel Arc Pro B70`, `torch==2.13.0+
 
 | Workflow | Config | Baseline / Prior | With `OmniXPU` + `DynamicVRAM` |
 | --- | --- | --- | --- |
-| **`QwenImage21`** | `25` steps, `int8_convrot` | `61.35s` | **`24.44s`–`28.77s`** warm |
+| **`Qwen Image 2.1 T2I`** | `25` steps, `int8_convrot`, `1024×1024` | `12.58s` warm (`torch`) | **`11.65s`–`11.69s`** warm (`21.76s`–`23.41s` cold) |
 | **`WAN_Animate2`** | `2 × 6` steps, `int8_convrot` | `XPU OOM` at step `0/6` | **`370.91s`** (0 OOMs) |
 | **`MiniMax H3 Ref2VA`** | `8` steps turbo, `960×544`, `8s` + audio | — *(reference)* | **`281.92s`–`297.45s`** · [sample MP4](./benchmarks/assets/minimax_h3_ref2va_8s_b70.mp4) |
+| **`Z-Image Turbo`** | `8` steps `bf16`, `1024×1024`, `cute` | — *(reference)* | **`33.41s`** cold · **`5.18s`–`5.27s`** warm · [samples](./benchmarks/README.md#sample-outputs) |
 
 *(Observational session timings; full breakdown and notes in [`benchmarks/README.md`](./benchmarks/README.md).)*
 
