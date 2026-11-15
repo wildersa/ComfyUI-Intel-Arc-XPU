@@ -55,6 +55,10 @@ class Config:
             master
             and os.environ.get("OMNIXPU_DYNAMIC_VRAM_BOUNDARY_TRIM", "1") != "0"
         )
+        self.dynamic_vram_fit_trim = (
+            self.dynamic_vram_boundary_trim
+            and os.environ.get("OMNIXPU_DYNAMIC_VRAM_FIT_TRIM", "1") != "0"
+        )
         self.xpu_ram_staging = (
             master and os.environ.get("OMNIXPU_XPU_RAM_STAGING", "1") != "0"
         )

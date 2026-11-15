@@ -4,18 +4,34 @@ from __future__ import annotations
 
 import functools
 import logging
+import os
 import sys
 from contextlib import nullcontext
+
+import torch
 
 try:
     from comfy_aimdo import model_vbar as _aimdo_model_vbar
 except ImportError:
     _aimdo_model_vbar = None
 
+try:
+    from ..config import config as _config
+except ImportError:
+    try:
+        from config import config as _config
+    except ImportError:
+        _config = None
+
 
 log = logging.getLogger("ComfyUI-OmniXPU")
 
 _PATCH_MARKER = "__omnixpu_dynamic_vram_boundary_original__"
+_FIT_TRIM_ENABLED = (
+    _config.dynamic_vram_fit_trim
+    if _config is not None
+    else os.environ.get("OMNIXPU_DYNAMIC_VRAM_FIT_TRIM", "1") != "0"
+)
 
 
 def _load_argument(args, kwargs, name, position, default):
@@ -84,6 +100,53 @@ def _aimdo_budget_scope(models, budget):
     return budget_scope(budget, devices), tuple(devices)
 
 
+def _actual_free_vram(model_management, device) -> int:
+    """Return real free XPU VRAM including AIMDO VBAR allocations."""
+    base_free = int(model_management.get_free_memory(device))
+    if getattr(device, "type", None) != "xpu":
+        return base_free
+    try:
+        free_device, _ = torch.xpu.mem_get_info(device)
+        stats = torch.xpu.memory_stats(device)
+        reusable_torch = max(
+            0,
+            int(stats.get("reserved_bytes.all.current", 0))
+            - int(stats.get("active_bytes.all.current", 0)),
+        )
+        return int(free_device) + reusable_torch
+    except Exception:
+        pass
+    if _aimdo_model_vbar is not None and hasattr(_aimdo_model_vbar, "vbars_analyze"):
+        try:
+            dev_idx = 0 if device.index is None else int(device.index)
+            aimdo_used = int(_aimdo_model_vbar.vbars_analyze(dev_idx))
+            return max(0, base_free - aimdo_used)
+        except Exception:
+            pass
+    return base_free
+
+
+def _peak_torch_growth(device) -> int:
+    try:
+        rsv = int(torch.xpu.memory_reserved(device))
+        peak = int(torch.xpu.max_memory_reserved(device))
+        return max(0, peak - rsv)
+    except Exception:
+        return 0
+
+
+def _unloaded_dynamic_bytes(models, device) -> int:
+    total = 0
+    for model in models:
+        if not model.is_dynamic() or model.load_device != device:
+            continue
+        size = max(0, int(model.model_size()))
+        loaded = max(0, int(model.loaded_size()))
+        if size > loaded:
+            total += size - loaded
+    return total
+
+
 def _trim_pass(model_management, device, target, requested, include_requested):
     reclaimed = 0
     trimmed = 0
@@ -95,7 +158,7 @@ def _trim_pass(model_management, device, target, requested, include_requested):
         if is_requested != include_requested:
             continue
 
-        shortfall = target - model_management.get_free_memory(device)
+        shortfall = target - _actual_free_vram(model_management, device)
         if shortfall <= 0:
             break
         if model.loaded_size() <= 0:
@@ -118,22 +181,30 @@ def _trim_dynamic_boundary(model_management, models, target):
         if getattr(device, "type", None) != "xpu":
             continue
 
-        free_before = int(model_management.get_free_memory(device))
-        if free_before >= target:
+        free_before = _actual_free_vram(model_management, device)
+        inactive_target = int(target)
+        if _FIT_TRIM_ENABLED:
+            unloaded_req = _unloaded_dynamic_bytes(models, device)
+            if unloaded_req > 0:
+                inactive_target = max(
+                    inactive_target,
+                    int(target) + unloaded_req + _peak_torch_growth(device),
+                )
+        if free_before >= inactive_target:
             continue
 
         inactive_bytes, inactive_models = _trim_pass(
-            model_management, device, target, requested, False
+            model_management, device, inactive_target, requested, False
         )
         active_bytes, active_models = _trim_pass(
-            model_management, device, target, requested, True
+            model_management, device, int(target), requested, True
         )
-        free_after = int(model_management.get_free_memory(device))
+        free_after = _actual_free_vram(model_management, device)
         log.info(
             "[OmniXPU] DynamicVRAM boundary trim: device=%s target=%.1fMiB "
             "free=%.1f->%.1fMiB reclaimed=%.1fMiB models=%d inactive/%d active",
             device,
-            target / (1024 ** 2),
+            inactive_target / (1024 ** 2),
             free_before / (1024 ** 2),
             free_after / (1024 ** 2),
             (inactive_bytes + active_bytes) / (1024 ** 2),

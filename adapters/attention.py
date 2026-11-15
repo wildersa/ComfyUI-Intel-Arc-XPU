@@ -489,6 +489,12 @@ def _run_experimental_masked_d128(prepared, mask):
 _ANIMATE2_CROSS_ENV = "OMNIXPU_ANIMATE2_CROSS"
 _ANIMATE2_SHAPES_ENV = "OMNIXPU_ANIMATE2_SHAPES"
 _ANIMATE2_HEADS = 40
+_CUTE_BHLD_GENERAL_ENV = "OMNIXPU_CUTE_BHLD_GENERAL"
+
+
+def _cute_bhld_general_enabled():
+    value = os.environ.get(_CUTE_BHLD_GENERAL_ENV, "1").strip().lower()
+    return value not in ("", "0", "false", "no", "off")
 
 
 def _animate2_cross_enabled():
@@ -586,6 +592,36 @@ def _prepare_bmg_d128_bhld_cute(
         and q_len * heads * dim_head <= _CUTE_D128_MAX_DENSE_ELEMENTS
         and kv_len * heads * dim_head <= _CUTE_D128_MAX_DENSE_ELEMENTS
     )
+    unmasked_contract = (
+        mask is None
+        and attn_precision is None
+        and not kwargs.get("is_causal", False)
+        and not kwargs.get("dropout_p", 0.0)
+        and not kwargs.get("enable_gqa", False)
+        and "scale" not in kwargs
+        and not any(getattr(t, "requires_grad", False) for t in (q, k, v))
+    )
+    reserved_b1_wan22_cross = (
+        b == 1
+        and heads == _ANIMATE2_HEADS
+        and q.dtype == torch.float16
+        and q_len == 75600
+        and kv_len == 512
+        and not skip_reshape
+        and not skip_output_reshape
+    )
+    general_d128 = (
+        _cute_bhld_general_enabled()
+        and unmasked_contract
+        and b >= 1
+        and heads >= 1
+        and dim_head == 128
+        and q_len >= 512
+        and kv_len >= 128
+        and not reserved_b1_wan22_cross
+        and b * heads * q_len * dim_head <= _CUTE_D128_MAX_DENSE_ELEMENTS
+        and b * heads * kv_len * dim_head <= _CUTE_D128_MAX_DENSE_ELEMENTS
+    )
     minimax_h3_attention = (
         b == 1
         and heads == 56
@@ -604,6 +640,7 @@ def _prepare_bmg_d128_bhld_cute(
         or minimax_h3_attention
         or animate2_attention
         or prefix_rectangular
+        or general_d128
     )
     if not (
         _backend_name == "cute"
@@ -613,14 +650,14 @@ def _prepare_bmg_d128_bhld_cute(
         and capability()
         and (
             q.dtype == torch.bfloat16
-            or (animate2_attention and q.dtype == torch.float16)
+            or ((animate2_attention or general_d128) and q.dtype == torch.float16)
         )
         and k.dtype == q.dtype
         and v.dtype == q.dtype
         and q.device.type == "xpu"
         and k.device == q.device
         and v.device == q.device
-        and (heads == 32 or minimax_h3_attention or animate2_attention)
+        and (heads == 32 or minimax_h3_attention or animate2_attention or general_d128)
         and dim_head == 128
         and supported_batch_kind
     ):
@@ -1113,19 +1150,21 @@ def apply():
         if not reasons and use_bmg_d128_bhld_cute:
             if not torch.compiler.is_compiling():
                 _cute_call_count += 1
+            tag = "fp16" if q.dtype == torch.float16 else "bf16"
             if heads == 56:
                 route = "minimax_h3_h56_bf16_d128_qkv_bhld"
-            elif q_len == kv_len:
+            elif heads == 32 and b == 2 and q_len == kv_len:
                 route = "bmg_b2_bf16_d128_self"
-            elif heads == _ANIMATE2_HEADS:
-                tag = "fp16" if q.dtype == torch.float16 else "bf16"
+            elif heads == _ANIMATE2_HEADS and b == 1 and q_len != kv_len:
                 route = (
                     f"animate2_b{b}_{tag}_d128_q{q_len}_kv{kv_len}_cross"
                 )
-            elif b == 1 and q_len < kv_len:
+            elif heads == 32 and b == 1 and q_len < kv_len:
                 route = "bmg_b1_bf16_d128_prefix_rectangular"
-            else:
+            elif heads == 32 and kv_len == 1024:
                 route = f"bmg_b{b}_bf16_d128_kv1024_cross"
+            else:
+                route = f"bmg_b{b}_h{heads}_{tag}_d128_q{q_len}_kv{kv_len}"
             route_call_count = _record_attention_route(route)
             if not torch.compiler.is_compiling() and not _attention_experimental_warning_emitted:
                 log.warning(
