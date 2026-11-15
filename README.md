@@ -8,14 +8,14 @@ Native **Intel Arc Battlemage (`bmg` / Arc Pro B70)** acceleration for **ComfyUI
 
 Out of the box, ComfyUI runs on Intel `xpu` through generic PyTorch fallback, leaving most of Battlemage's native hardware stack unused: no Intel SYCL/CUTE/oneDNN kernels, no `comfy-kitchen` XPU backend, and no Windows `DynamicVRAM` support in `comfy-aimdo`.
 
-Intel and upstream contributors solved those gaps in [`intel/llm-scaler`](https://github.com/intel/llm-scaler) (`omni`), [`xiangyuT/comfy-kitchen-xpu`](https://github.com/xiangyuT/comfy-kitchen-xpu), and [`xiangyuT/comfy-aimdo-xpu`](https://github.com/xiangyuT/comfy-aimdo-xpu) — but upstream targets Linux Docker images or manual Windows C++/SYCL builds (oneAPI, Visual Studio, Detours, Level Zero). **This repository packages, compiles, and tests that official stack directly on Windows 11 (`Intel Arc Pro B70`)** with prebuilt wheels ([Release `v0.2.0`](https://github.com/wildersa/ComfyUI-Intel-Arc-XPU/releases/tag/v0.2.0)) and automated installers — **no compiler toolchain needed, and zero core ComfyUI files modified.**
+Intel and upstream contributors solved those gaps in [`intel/llm-scaler`](https://github.com/intel/llm-scaler) (`omni`), [`xiangyuT/comfy-kitchen-xpu`](https://github.com/xiangyuT/comfy-kitchen-xpu), and [`xiangyuT/comfy-aimdo-xpu`](https://github.com/xiangyuT/comfy-aimdo-xpu) — where official `llm-scaler` images target Linux Docker and Windows requires manual C++/SYCL toolchains (oneAPI, `sycl-tla`, Visual Studio, Detours, Level Zero). **This repository compiles the native Windows binaries (`omni_xpu_kernel` and `comfy-aimdo-xpu-runtime`) and packages the complete Python provider/node stack for Windows 11 (`Intel Arc Pro B70`)** via prebuilt wheels ([Release `v0.2.0`](https://github.com/wildersa/ComfyUI-Intel-Arc-XPU/releases/tag/v0.2.0)) and automated installers — **no compiler toolchain needed, and zero core ComfyUI files modified.**
 
 | Capability | Stock ComfyUI (Windows `xpu`) | With `ComfyUI-Intel-Arc-XPU` (`llm-scaler` Stack) |
 | --- | --- | --- |
-| **Compute Kernels** | PyTorch generic fallback | Native `omni_xpu_kernel==0.2.0b3+torch213.bmg` (CUTLASS-SYCL `CUTE` FMHA, ESIMD SDP, oneDNN GEMM) |
-| **`comfy-kitchen` Backend** | Eager / fallback only | Native XPU provider (`comfy-kitchen-xpu-runtime==0.2.41`): INT8, ConvRot, FP8 QDQ, W4A8, SVDQuant, AdaLN, RoPE |
-| **Windows `DynamicVRAM`** | Unavailable for Windows XPU | Enabled via `comfy-aimdo-xpu-runtime==0.6.0` (Level Zero + Microsoft Detours + host RAM weight staging) |
-| **Model & Node Integration** | Unadapted | `ComfyUI-OmniXPU` (`prestartup_script.py`, Qwen-Image 2.1, MiniMax H3, SeedVR2, INT8 FFN) + **`OmniXPU Status`** node |
+| **Compute Kernels** *(compiled C++/SYCL)* | PyTorch generic fallback | Windows-built `omni_xpu_kernel==0.2.0b3+torch213.bmg` (`cp313-win_amd64`: CUTLASS-SYCL `CUTE` FMHA, ESIMD SDP, oneDNN GEMM) |
+| **`comfy-kitchen` Backend** *(pure Python)* | Eager / fallback only | `comfy-kitchen-xpu-runtime==0.2.41` (`py3-none-any` provider routing INT8, ConvRot, FP8 QDQ, W4A8, SVDQuant, AdaLN, RoPE to `omni_xpu_kernel`) |
+| **Windows `DynamicVRAM`** *(compiled C/C++)* | Unavailable for Windows XPU | Windows-built `comfy-aimdo-xpu-runtime==0.6.0` (`cp39-abi3-win_amd64`: `aimdo_xpu.dll` via Level Zero + Microsoft Detours) |
+| **Model & Node Integration** *(pure Python)* | Unadapted | `ComfyUI-OmniXPU` (`prestartup_script.py`, Qwen-Image 2.1, MiniMax H3, SeedVR2, INT8 FFN) + **`OmniXPU Status`** node |
 | **Install & Core Files** | Clean | **Core untouched**; installs via **ComfyUI Manager** (`install.py`) or **`install.ps1`** |
 
 > [!NOTE]
@@ -70,7 +70,7 @@ cd ComfyUI-Intel-Arc-XPU
 | `OMNIXPU_ENABLE` | `1` | Set to `0` to disable all OmniXPU patches and providers. |
 | `OMNIXPU_DEBUG` / `OMNIXPU_DEBUG_VERBOSE` | `0` | Set to `1` for kernel or dispatch tracing. |
 
-Release `v0.2.0` prebuilt assets (`omni_xpu_kernel-0.2.0b3+torch213.bmg`, `comfy_kitchen_xpu_runtime-0.2.41`, `comfy_aimdo_xpu_runtime-0.6.0`) and their hashes are listed in [`SHA256SUMS.txt`](./SHA256SUMS.txt) and [Releases (`v0.2.0`)](https://github.com/wildersa/ComfyUI-Intel-Arc-XPU/releases/tag/v0.2.0).
+Release `v0.2.0` assets ([`SHA256SUMS.txt`](./SHA256SUMS.txt) · [Releases (`v0.2.0`)](https://github.com/wildersa/ComfyUI-Intel-Arc-XPU/releases/tag/v0.2.0)): Windows-compiled `omni_xpu_kernel-0.2.0b3+torch213.bmg-cp313-cp313-win_amd64.whl` (C++/SYCL kernels), Windows-compiled `comfy_aimdo_xpu_runtime-0.6.0-cp39-abi3-win_amd64.whl` (C/C++ `aimdo_xpu.dll`), and pure-Python `comfy_kitchen_xpu_runtime-0.2.41-py3-none-any.whl` (`comfy-kitchen` XPU provider).
 
 </details>
 
