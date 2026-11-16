@@ -97,9 +97,9 @@ DynamicVRAM support detected and enabled
 
 ## 5. Benchmarks & Telemetry
 
-Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** comparing stock ComfyUI (no extension, `DynamicVRAM` off) against `ComfyUI-Intel-Arc-XPU` (`--enable-dynamic-vram`):
+Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** comparing **Stock ComfyUI (OOTB)** (out-of-the-box, no extension, `DynamicVRAM` off) against **`ComfyUI-Intel-Arc-XPU`** (`--enable-dynamic-vram`):
 
-| Model | Config | Stock ComfyUI | With Extension (`torch`) | With Extension (`cute`) |
+| Model | Config | Stock ComfyUI (OOTB) | With Extension (`torch`) | With Extension (`cute`) |
 | --- | --- | --- | --- | --- |
 | **`MOSS-Image`** | `int8_convrot` + `W4A8`, `25` steps | `375.28s` cold · `50.75s` warm | `103.45s` cold · `20.01s` warm | **`29.53s`** cold (`12.7×`) · **`18.27s`** warm (`2.78×`) |
 | **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | **`209.29s`** cold (`1.91×`) | — *(see `8`-step ref)* |
@@ -113,7 +113,7 @@ Full tables and sample outputs in [`benchmarks/README.md`](./benchmarks/README.m
 
 ## 6. Licenses, Upstream Sources & Advanced Variables
 
-- **Prefer Not to Use Prebuilt Binaries?** Follow Intel's official `omni` stack and custom-node instructions directly at **<https://github.com/intel/llm-scaler/tree/main/omni>** and **<https://github.com/intel/llm-scaler/tree/main/omni/ComfyUI-OmniXPU>** to build/install from Intel's sources. Self-built compilation setups are out of scope for this repository.
+- **Prefer Not to Use Prebuilt Binaries?** Follow Intel's official `omni` stack and custom-node instructions directly at **<https://github.com/intel/llm-scaler/tree/main/omni>** and **<https://github.com/intel/llm-scaler/tree/main/omni/ComfyUI-OmniXPU>** to build/install from Intel's sources.
 - **Licenses:** Apache License 2.0 ([`LICENSE`](./LICENSE)) and GNU General Public License v3.0 ([`LICENSE-GPL-3.0.txt`](./LICENSE-GPL-3.0.txt) for `comfy-aimdo-xpu-runtime`).
 - **Attributions & Checksums:** [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) (`intel/llm-scaler`, `xiangyuT/comfy-kitchen-xpu`, `xiangyuT/comfy-aimdo-xpu`, `Comfy-Org/comfy-aimdo`, `oneDNN`, `Strata`, `Level Zero`, `Detours`) · [`SHA256SUMS.txt`](./SHA256SUMS.txt).
 

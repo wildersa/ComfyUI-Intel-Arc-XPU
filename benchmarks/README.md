@@ -1,12 +1,12 @@
 # Benchmarks
 
 Measured on **Windows 11 (`Intel Arc Pro B70`, `xpu:0`, `torch==2.13.0+xpu`)**.
-- **Stock ComfyUI:** clean instance without `ComfyUI-Intel-Arc-XPU` (`DynamicVRAM` off, stock PyTorch ops).
+- **Stock ComfyUI (OOTB):** out-of-the-box ComfyUI without `ComfyUI-Intel-Arc-XPU` (`DynamicVRAM` off, stock PyTorch ops).
 - **With Extension:** `ComfyUI-Intel-Arc-XPU` (`omni_xpu_kernel==0.2.0b3+torch213.bmg`, `comfy-kitchen-xpu-runtime==0.2.41`, `comfy-aimdo-xpu-runtime==0.6.0`, `--enable-dynamic-vram`), showing both `OMNI_ATTN_BACKEND=torch` and `OMNI_ATTN_BACKEND=cute`.
 
 ## Comparison Table
 
-| Model | Config | Stock ComfyUI | With Extension (`torch`) | With Extension (`cute`) | Speedup vs Stock |
+| Model | Config | Stock ComfyUI (OOTB) | With Extension (`torch`) | With Extension (`cute`) | Speedup vs Stock |
 | --- | --- | --- | --- | --- | --- |
 | **`MOSS-Image`** | `int8_convrot` + `W4A8`, `25` steps | `375.28s` cold · `50.75s` warm | `103.45s` cold · `20.01s` warm | **`29.53s`** cold · **`18.27s`** warm | **`12.7×` cold · `2.78×` warm** (`cute`) |
 | **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | **`209.29s`** cold | — *(8-step ref below)* | **`1.91×` cold** (`torch`) |
@@ -61,6 +61,6 @@ All three PNGs below embed the full ComfyUI `prompt` and `workflow` metadata (`z
 
 ## Notes
 
-- Stock ComfyUI baselines (`MOSS-Image` and `MiniMax H3 Ref2VA` 20-step) and extension runs share the same `torch==2.13.0+xpu` build on Windows 11 (`Intel Arc Pro B70`).
+- Stock ComfyUI (OOTB) baselines (`MOSS-Image` and `MiniMax H3 Ref2VA` 20-step) and extension runs share the same `torch==2.13.0+xpu` build on Windows 11 (`Intel Arc Pro B70`).
 - Rows marked `— (not tested)` have no `torch==2.13.0+xpu` stock baseline yet and reflect `torch` vs. `cute` extension runs or reference timings.
 - No host-specific paths, LUIDs, usernames, or credentials are stored in this directory.
