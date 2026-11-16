@@ -9,11 +9,13 @@ Measured on **Windows 11 (`Intel Arc Pro B70`, `xpu:0`, `torch==2.13.0+xpu`)**.
 | Model | Config | Stock ComfyUI (OOTB) | With Extension (`torch`) | With Extension (`cute`) | Speedup vs Stock |
 | --- | --- | --- | --- | --- | --- |
 | **`MOSS-Image`** | `int8_convrot` + `W4A8`, `25` steps | `375.28s` cold · `50.75s` warm | `103.45s` cold · `20.01s` warm | **`29.53s`** cold · **`18.27s`** warm | **`12.7×` cold · `2.78×` warm** (`cute`) |
-| **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | **`209.29s`** cold | — *(8-step ref below)* | **`1.91×` cold** (`torch`) |
+| **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | `209.29s` cold · `179.84s` warm | **`186.08s`** cold · **`160.25s`** warm | **`2.15×` cold · `9.87×` warm** (`cute`) |
 | **`Qwen Image 2.1 T2I`** | `int8_convrot`, `1024×1024`, `25` steps | — *(not tested)* | `22.48s` cold · `12.58s` warm | **`21.51s`** cold · **`11.38s`** warm | `1.05×` cold · `1.11×` warm (`cute` vs `torch`) |
 | **`Z-Image Turbo`** | `bf16`, `1024×1024`, `8` steps | — *(not tested)* | — | **`33.41s`** cold · **`5.19s`–`5.27s`** warm | — *(reference, `1.71–1.72 it/s`)* |
 | **`WAN 2.2 T2V 14B`** | `fp8_scaled`, `2` steps (Turbo) | — *(not tested)* | `104.37s` cold | **`93.09s`** cold · **`82.62s`** warm | `1.12×` cold (`cute` vs `torch`) |
-| **`MiniMax H3 Ref2VA` (8-step)** | `8`-step Turbo, `960×544`, `8s` + audio | — *(not tested)* | **`293.36s`** (`fp8_scaled`) · `86.31s` (`int8_convrot` warm) | **`70.88s`** (`int8_convrot` warm) | — *(reference, `0.00 ms` AV drift)* |
+| **`MiniMax H3 Ref2VA` (8-step)** | `8`-step Turbo, `960×544`, `8s` + audio | — *(not tested)* | `293.36s` (`fp8_scaled`) · `86.31s` (`int8_convrot` warm) | **`97.27s`** cold · **`70.85s`** warm (`int8_convrot`) | — *(reference, `0.00 ms` AV drift)* |
+
+<sub>**`cold`** = first run (loading models from disk + XPU/kernel warmup) · **`warm` (hot)** = subsequent runs with models/caches already loaded.</sub>
 
 ## Sample Outputs
 
