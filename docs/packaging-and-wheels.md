@@ -1,7 +1,7 @@
 # Packaging, Bundled Wheels & Upstream Build Sources
 
 > [!NOTE]
-> Most users do **not** need this document. Installing **`ComfyUI-Intel-Arc-XPU`** via ComfyUI Manager automatically installs the bundled binaries from [`wheels/`](../wheels) during setup (`install.py`) without any compiler toolchain.
+> Most users do **not** need this document. Installing via **Git URL / `git clone`** (`install.py` or `.\install.ps1`) installs the bundled binaries from [`wheels/`](../wheels) automatically without any compiler toolchain. (Comfy Registry packages exclude `.whl` files and `install.py` per Registry policy, so Registry users run `.\install.ps1` separately.)
 
 ---
 
@@ -55,6 +55,10 @@ Exact upstream revisions and toolchains used to build the bundled components (se
 - **`intel/llm-scaler`** (`1101fd71e10757e90bb6aae0eddbe1aea6317bb3`): `ComfyUI-OmniXPU` adapters + `omni_xpu_kernel` compiled with Intel oneAPI DPC++/C++, `sycl-tla`, `oneDNN`, and `Strata`.
 - **`xiangyuT/comfy-kitchen-xpu`** (`f27f58782c51b6ab314b4cc0f6e65c8a6bafa277`, `0.2.41`): XPU backend provider packaged as `comfy_kitchen_xpu_runtime`.
 - **`xiangyuT/comfy-aimdo-xpu`** (`3bc6afbcb92e10a2d4737e79d170190ed787bf89`, `0.6.0`, based on `Comfy-Org/comfy-aimdo`): Windows `aimdo_xpu.dll` compiled with MSVC using `oneapi-src/level-zero` and `microsoft/Detours`.
+
+### Prefer Not to Use Prebuilt Binaries?
+
+If you prefer not to use the precompiled `.whl`/`.dll` files packaged in this repository, follow Intel's official repository and upstream stack instructions directly at **<https://github.com/intel/llm-scaler>** (which references the corresponding upstream XPU components) and build/install the stack directly from Intel's sources. Self-built / custom compilation setups are out of scope for this repository.
 
 ---
 
