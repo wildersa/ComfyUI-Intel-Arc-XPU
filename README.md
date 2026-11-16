@@ -110,8 +110,28 @@ Reference timings recorded on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch
 
 ---
 
-## 6. Packaging Details, Licenses & Credits
+## 6. Licenses, Upstream Sources & Advanced Variables
 
-- **Bundled Binaries, Checksums & Upstream Sources:** See [`docs/packaging-and-wheels.md`](./docs/packaging-and-wheels.md) for wheel contents, SHA-256 verification, upstream source revisions, and advanced environment variables.
+- **Prefer Not to Use Prebuilt Binaries?** Follow Intel's official `omni` stack and custom-node instructions directly at **<https://github.com/intel/llm-scaler/tree/main/omni>** and **<https://github.com/intel/llm-scaler/tree/main/omni/ComfyUI-OmniXPU>** to build/install from Intel's sources. Self-built compilation setups are out of scope for this repository.
 - **Licenses:** Apache License 2.0 ([`LICENSE`](./LICENSE)) and GNU General Public License v3.0 ([`LICENSE-GPL-3.0.txt`](./LICENSE-GPL-3.0.txt) for `comfy-aimdo-xpu-runtime`).
-- **Attributions:** [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) (`intel/llm-scaler`, `xiangyuT/comfy-kitchen-xpu`, `xiangyuT/comfy-aimdo-xpu`, `Comfy-Org/comfy-aimdo`, `oneDNN`, `Strata`, `Level Zero`, `Detours`).
+- **Attributions & Checksums:** [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) (`intel/llm-scaler`, `xiangyuT/comfy-kitchen-xpu`, `xiangyuT/comfy-aimdo-xpu`, `Comfy-Org/comfy-aimdo`, `oneDNN`, `Strata`, `Level Zero`, `Detours`) · [`SHA256SUMS.txt`](./SHA256SUMS.txt).
+
+<details>
+<summary>Advanced Environment Variables &amp; Manual CLI Verification</summary>
+
+| Variable | Default (Windows) | Purpose |
+| --- | --- | --- |
+| `OMNI_ATTN_BACKEND` | `torch` | `torch` (PyTorch SDPA), `cute` (CUTLASS-SYCL FMHA), `auto`, or `esimd`. |
+| `OMNIXPU_PROVIDER_BOOTSTRAP` | `auto` | Provider routing mode: `auto`, `off`, or `required`. |
+| `OMNIXPU_XPU_MEMORY_FRACTION` | `0.99` | Caching-allocator fraction applied on prestartup (`0` / `off` disables). |
+| `OMNIXPU_ENABLE` | `1` | Set to `0` to disable all OmniXPU providers and patches. |
+| `OMNIXPU_DEBUG` / `OMNIXPU_DEBUG_VERBOSE` | `0` | Set to `1` for kernel or dispatch tracing. |
+
+To inspect or rerun bundled wheel alignment from CLI (`--no-deps` + SHA-256 verified against `SHA256SUMS.txt`):
+
+```powershell
+"<ComfyUI_Python>\python.exe" install.py --dry-run
+"<ComfyUI_Python>\python.exe" install.py
+```
+
+</details>
