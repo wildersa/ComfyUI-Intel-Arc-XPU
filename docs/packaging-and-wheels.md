@@ -58,7 +58,7 @@ Exact upstream revisions and toolchains used to build the bundled components (se
 
 ### Prefer Not to Use Prebuilt Binaries?
 
-If you prefer not to use the precompiled `.whl`/`.dll` files packaged in this repository, follow Intel's official repository and upstream stack instructions directly at **<https://github.com/intel/llm-scaler>** (which references the corresponding upstream XPU components) and build/install the stack directly from Intel's sources. Self-built / custom compilation setups are out of scope for this repository.
+If you prefer not to use the precompiled `.whl`/`.dll` files packaged in this repository, follow Intel's official **`omni`** stack and custom-node instructions directly at **<https://github.com/intel/llm-scaler/tree/main/omni>** and **<https://github.com/intel/llm-scaler/tree/main/omni/ComfyUI-OmniXPU>** (which reference the corresponding upstream XPU components) and build/install the stack directly from Intel's sources. Self-built / custom compilation setups are out of scope for this repository.
 
 ---
 
