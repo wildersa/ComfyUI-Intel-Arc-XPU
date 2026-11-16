@@ -1,4 +1,7 @@
 benchmarks/
+wheels/
+install.py
+install.ps1
 __pycache__/
 *.pyc
 *.pyo

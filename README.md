@@ -1,87 +1,79 @@
 # ComfyUI-Intel-Arc-XPU
 
-Native **Intel Arc Battlemage (`bmg` / Arc Pro B70)** acceleration for **ComfyUI on Windows**, built from Intel's official [`intel/llm-scaler`](https://github.com/intel/llm-scaler) (`omni 0.2.0-b3`) stack and packaged for one-step installation via **ComfyUI Manager** or **`install.ps1`**.
+Native **Intel Arc Battlemage (`bmg` / Arc Pro B70)** acceleration for **ComfyUI on Windows**, combining `ComfyUI-OmniXPU` model adapters and diagnostics with Windows XPU compute kernels, `comfy-kitchen` XPU backend, and `DynamicVRAM` support — zero core ComfyUI files modified.
 
 ---
 
-## Why This Exists
+## 1. Prerequisite (Required)
 
-Out of the box, ComfyUI runs on Intel `xpu` through generic PyTorch fallback, leaving most of Battlemage's native hardware stack unused: no Intel SYCL/CUTE/oneDNN kernels, no `comfy-kitchen` XPU backend, and no Windows `DynamicVRAM` support in `comfy-aimdo`.
-
-Intel and upstream contributors solved those gaps in [`intel/llm-scaler`](https://github.com/intel/llm-scaler) (`omni`), [`xiangyuT/comfy-kitchen-xpu`](https://github.com/xiangyuT/comfy-kitchen-xpu), and [`xiangyuT/comfy-aimdo-xpu`](https://github.com/xiangyuT/comfy-aimdo-xpu) — where official `llm-scaler` images target Linux Docker and Windows requires manual C++/SYCL toolchains (oneAPI, `sycl-tla`, Visual Studio, Detours, Level Zero). **This repository compiles the native Windows binaries (`omni_xpu_kernel` and `comfy-aimdo-xpu-runtime`) and packages the complete Python provider/node stack for Windows 11 (`Intel Arc Pro B70`)** via prebuilt wheels ([Release `v0.2.0`](https://github.com/wildersa/ComfyUI-Intel-Arc-XPU/releases/tag/v0.2.0)) and automated installers — **no compiler toolchain needed, and zero core ComfyUI files modified.**
-
-| Capability | Stock ComfyUI (Windows `xpu`) | With `ComfyUI-Intel-Arc-XPU` (`llm-scaler` Stack) |
-| --- | --- | --- |
-| **Compute Kernels** *(compiled C++/SYCL)* | PyTorch generic fallback | Windows-built `omni_xpu_kernel==0.2.0b3+torch213.bmg` (`cp313-win_amd64`: CUTLASS-SYCL `CUTE` FMHA, ESIMD SDP, oneDNN GEMM) |
-| **`comfy-kitchen` Backend** *(pure Python)* | Eager / fallback only | `comfy-kitchen-xpu-runtime==0.2.41` (`py3-none-any` provider routing INT8, ConvRot, FP8 QDQ, W4A8, SVDQuant, AdaLN, RoPE to `omni_xpu_kernel`) |
-| **Windows `DynamicVRAM`** *(compiled C/C++)* | Unavailable for Windows XPU | Windows-built `comfy-aimdo-xpu-runtime==0.6.0` (`cp39-abi3-win_amd64`: `aimdo_xpu.dll` via Level Zero + Microsoft Detours) |
-| **Model & Node Integration** *(pure Python)* | Unadapted | `ComfyUI-OmniXPU` (`prestartup_script.py`, Qwen-Image 2.1, MiniMax H3, SeedVR2, INT8 FFN) + **`OmniXPU Status`** node |
-| **Install & Core Files** | Clean | **Core untouched**; installs via **ComfyUI Manager** (`install.py`) or **`install.ps1`** |
-
-> [!NOTE]
-> **Tested Environment:** Windows 11 x64 (`win_amd64`) · **Intel Arc Pro B70** (`32 GB`, `bmg`) · Python `3.13` (`cp313`) · `torch==2.13.0+xpu` · ComfyUI `v0.45.3` (`comfy-aimdo==0.6.0`, `comfy-kitchen==0.2.41`).
-
----
-
-## Installation
-
-**Prerequisite:** Ensure your ComfyUI Python `3.13` environment already has `torch==2.13.0+xpu`:
+Your Windows ComfyUI environment **must** already have **Windows 11 x64**, **Python `3.13`**, and **`torch==2.13.0+xpu`** installed:
 
 ```powershell
 "<ComfyUI_Python>\python.exe" -m pip install --upgrade torch==2.13.0+xpu torchvision==0.28.0+xpu --index-url https://download.pytorch.org/whl/xpu
 ```
 
-### Method 1: ComfyUI Manager (*Install via Git URL*)
-1. In **ComfyUI Manager → Install via Git URL**, paste `https://github.com/wildersa/ComfyUI-Intel-Arc-XPU`.
-2. [`install.py`](./install.py) validates Windows `cp313` + `torch==2.13.0+xpu`, downloads and SHA-256-verifies the 3 prebuilt wheels from Release `v0.2.0` (`--no-deps`), and skips already-matching packages.
-3. Restart ComfyUI / Comfy Desktop.
+> [!IMPORTANT]
+> If Python or PyTorch does not match **`Python 3.13` + `torch==2.13.0+xpu`** (or if Intel XPU is unavailable), the extension prints a **`CONFLICT:`** message and disables itself cleanly instead of crashing ComfyUI. If an upstream ComfyUI update changes an internal hook, conflicting patches fall back to stock ComfyUI behavior.
 
-### Method 2: Clone / ZIP + `.\install.ps1` *(Recommended for Comfy Desktop / Portable)*
+---
+
+## 2. Installation
+
+### Option A — ComfyUI Manager / Comfy Registry *(+ 1 extra binary step on Windows)*
+
+Per **Comfy Registry security standards**, Registry packages exclude prebuilt `.whl` binaries and automated `pip` installers. Installing **`ComfyUI Intel Arc XPU (OmniXPU Windows)`** (`comfyui-intel-arc-xpu`) via the Manager Registry installs the Python adapters, conflict checks, and the **`OmniXPU Status`** diagnostic node — then finish setup with this **one extra PowerShell step**:
+
 ```powershell
 git clone https://github.com/wildersa/ComfyUI-Intel-Arc-XPU.git
 cd ComfyUI-Intel-Arc-XPU
 .\install.ps1
 ```
-`install.ps1` auto-detects your ComfyUI install, checks for running `python.exe` locks, flags conflicting older XPU nodes, installs and verifies the wheels + custom node after confirmation, and optionally sets `OMNI_ATTN_BACKEND=cute`. *(Supports `-ComfyPath`, `-DryRun`, and `-Yes`.)*
+
+*(If you already have the extension folder via Registry, running `.\install.ps1` updates/installs the XPU runtime packages in your active ComfyUI `.venv` cleanly.)*
+
+### Option B — Direct GitHub Install *(All-in-One via Git Clone or Git URL)*
+
+If installing directly from GitHub (`git clone` into `ComfyUI\custom_nodes\` or **ComfyUI Manager → Install via Git URL**, which requires `allow_git_url_install = True` in `user\__manager\config.ini`), the bundled Windows XPU runtimes are included in the repository and installed automatically by `install.py` on restart.
+
+- Remove any older `comfyui-xpu-backend` folder in `custom_nodes/` if present so patches do not conflict.
 
 ---
 
-## Windows Configuration
+## 3. Required / Recommended Flags & Environment Setup
 
-1. **Enable DynamicVRAM:** Add these ComfyUI launch flags (or Comfy Desktop `launchArgs`):
-   ```text
-   --enable-dynamic-vram --reserve-vram 4
-   ```
-2. **Attention Backend (`OMNI_ATTN_BACKEND`):** Defaults to `torch` (PyTorch SDPA) on Windows for stability. To opt into CUTLASS-SYCL FMHA (`omni_xpu_kernel.cute`) — or switch back to `torch` to isolate experimental routes — set it in User environment variables and restart ComfyUI:
-   ```powershell
-   [Environment]::SetEnvironmentVariable("OMNI_ATTN_BACKEND", "cute", "User")   # enable CUTE FMHA
-   [Environment]::SetEnvironmentVariable("OMNI_ATTN_BACKEND", "torch", "User")  # back to Windows default
-   ```
-3. **Verify:** Add **`OmniXPU Status`** to any workflow (or check `comfyui.log` below). Remove older `comfyui-xpu-backend` or duplicate `ComfyUI-OmniXPU` folders so patches do not conflict.
+After installing, configure these two Windows settings for full performance:
 
-<details>
-<summary>Advanced Environment Variables & Release v0.2.0 Wheels</summary>
+### 1. ComfyUI Launch Flags *(Explicitly Recommended)*
 
-| Variable | Default (Windows) | Purpose |
-| --- | --- | --- |
-| `OMNI_ATTN_BACKEND` | `torch` | `torch` (PyTorch SDPA), `cute` (CUTLASS-SYCL FMHA), `auto`, or `esimd`. |
-| `OMNIXPU_PROVIDER_BOOTSTRAP` | `auto` | Provider loading: `auto`, `off`, or `required`. |
-| `OMNIXPU_XPU_MEMORY_FRACTION` | `0.99` | Caching-allocator fraction applied on prestartup (`0` / `off` disables). |
-| `OMNIXPU_ENABLE` | `1` | Set to `0` to disable all OmniXPU patches and providers. |
-| `OMNIXPU_DEBUG` / `OMNIXPU_DEBUG_VERBOSE` | `0` | Set to `1` for kernel or dispatch tracing. |
+Add these launch arguments to your ComfyUI startup command or **Comfy Desktop → Settings → Launch Arguments (`launchArgs`)**:
 
-Release `v0.2.0` assets ([`SHA256SUMS.txt`](./SHA256SUMS.txt) · [Releases (`v0.2.0`)](https://github.com/wildersa/ComfyUI-Intel-Arc-XPU/releases/tag/v0.2.0)): Windows-compiled `omni_xpu_kernel-0.2.0b3+torch213.bmg-cp313-cp313-win_amd64.whl` (C++/SYCL kernels), Windows-compiled `comfy_aimdo_xpu_runtime-0.6.0-cp39-abi3-win_amd64.whl` (C/C++ `aimdo_xpu.dll`), and pure-Python `comfy_kitchen_xpu_runtime-0.2.41-py3-none-any.whl` (`comfy-kitchen` XPU provider).
+```text
+--enable-dynamic-vram --reserve-vram 4
+```
 
-</details>
+**What works with vs. without `--enable-dynamic-vram --reserve-vram 4`:**
+- **Without `--enable-dynamic-vram`:** Compute acceleration still works — native Intel XPU kernels (`omni_xpu_kernel`), `comfy-kitchen`'s `xpu` backend (INT8, ConvRot, FP8, W4A8), and model adapters still accelerate workflows that fit inside VRAM.
+- **With `--enable-dynamic-vram --reserve-vram 4`:** Unlocks **Windows `DynamicVRAM`** (`comfy-aimdo` XPU overlay) and host RAM weight staging, preventing `XPU out of memory` on large/video workflows (`WAN_Animate2`, `MiniMax H3`).
 
----
+### 2. Attention Backend (`OMNI_ATTN_BACKEND`)
 
-## Log Diagnostics & Troubleshooting
-
-Scan `<ComfyUI>\user\comfyui.log` in PowerShell to verify what loaded or spot common issues:
+Windows defaults to `torch` (PyTorch SDPA) for stability. To enable CUTLASS-SYCL `CUTE` FMHA attention on Intel Arc BMG (or revert to `torch` when isolating experimental routes):
 
 ```powershell
-Select-String -Path "<ComfyUI>\user\comfyui.log" -Pattern "OmniXPU|comfy_kitchen backend xpu|comfy_kitchen backend triton|DynamicVRAM|aimdo|Native ops|full load:|CUTE|OMNI_ATTN_BACKEND|XPU out of memory|comfy kitchen attention"
+[Environment]::SetEnvironmentVariable("OMNI_ATTN_BACKEND", "cute", "User")   # enable CUTE FMHA
+[Environment]::SetEnvironmentVariable("OMNI_ATTN_BACKEND", "torch", "User")  # revert to Windows default
+```
+
+Restart ComfyUI / Comfy Desktop after changing environment variables or `launchArgs`.
+
+---
+
+## 4. Verify Installation
+
+Add the **`OmniXPU Status`** node to any workflow, or check `<ComfyUI>\user\comfyui.log` in PowerShell:
+
+```powershell
+Select-String -Path "<ComfyUI>\user\comfyui.log" -Pattern "OmniXPU|comfy_kitchen backend xpu|DynamicVRAM|aimdo|Native ops|CUTE|OMNI_ATTN_BACKEND|CONFLICT|XPU out of memory"
 ```
 
 **Expected when healthy:**
@@ -94,30 +86,32 @@ DynamicVRAM support detected and enabled
 
 | Log Signature | Meaning / Fix |
 | --- | --- |
-| `XPU out of memory` + `full load: True` *(without `DynamicVRAM support detected and enabled`)* | Add `--enable-dynamic-vram --reserve-vram 4` and verify `comfy-aimdo-xpu-runtime` is active. |
-| `Found comfy_kitchen backend xpu: {'available': False...}` or missing `Native ops: int8_tensorwise` | Verify `omni_xpu_kernel` + `comfy-kitchen-xpu-runtime` in the active `.venv` and remove conflicting XPU `custom_nodes`. |
-| `experimental capability-driven BMG D128 CUTE route enabled` | `OMNI_ATTN_BACKEND=cute` used an experimental attention route; switch to `torch` and restart to isolate artifacts. |
+| `[OmniXPU] CONFLICT: ... requires ... torch==2.13.0+xpu` | Incompatible Python/PyTorch build; install `torch==2.13.0+xpu` on Python `3.13`. |
+| `Native Windows XPU runtime binaries (omni_xpu_kernel) are not installed` | Installed via Registry without running the extra binary setup step (`.\install.ps1` / `install.py`). |
+| `XPU out of memory` *(without `DynamicVRAM support detected and enabled`)* | Add `--enable-dynamic-vram --reserve-vram 4` to your ComfyUI launch flags. |
+| `experimental capability-driven BMG D128 CUTE route enabled` | `OMNI_ATTN_BACKEND=cute` hit an experimental attention route; switch `OMNI_ATTN_BACKEND` back to `torch` to isolate artifacts. |
 | `Attention backend 'comfy kitchen attention' is unavailable; using PyTorch attention.` | CUDA-origin workflow; switch `ModelAttentionBackend` to `"pytorch attention"` (and bypass CUDA-only `sol-attn` sparse nodes). |
 | `Found comfy_kitchen backend triton: {'available': False, 'disabled': True...}` | **Expected on Windows** (not an error); XPU uses the `xpu` backend, not `triton`. |
 
 ---
 
-## Benchmarks & Telemetry
+## 5. Benchmarks & Telemetry
 
-Reference timings recorded on **Windows 11 (`Intel Arc Pro B70`, `torch==2.13.0+xpu`)**:
+Reference timings recorded on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)**:
 
-| Workflow | Config | Baseline / Prior | With `OmniXPU` + `DynamicVRAM` |
+| Workflow | Config | Stock / Prior | With `ComfyUI-Intel-Arc-XPU` + `DynamicVRAM` |
 | --- | --- | --- | --- |
 | **`Qwen Image 2.1 T2I`** | `25` steps, `int8_convrot`, `1024×1024` | `12.58s` warm (`torch`) | **`11.65s`–`11.69s`** warm (`21.76s`–`23.41s` cold) |
-| **`WAN_Animate2`** | `2 × 6` steps, `int8_convrot` | `XPU OOM` at step `0/6` | **`370.91s`** (0 OOMs) |
+| **`WAN_Animate2`** | `2 × 6` steps, `int8_convrot` | `XPU OOM` at step `0/6` | **`370.91s`** (`0` OOMs) |
 | **`MiniMax H3 Ref2VA`** | `8` steps turbo, `960×544`, `8s` + audio | — *(reference)* | **`281.92s`–`297.45s`** · [sample MP4](./benchmarks/assets/minimax_h3_ref2va_8s_b70.mp4) |
 | **`Z-Image Turbo`** | `8` steps `bf16`, `1024×1024`, `cute` | — *(reference)* | **`33.41s`** cold · **`5.18s`–`5.27s`** warm · [samples](./benchmarks/README.md#sample-outputs) |
 
-*(Observational session timings; full breakdown and notes in [`benchmarks/README.md`](./benchmarks/README.md).)*
+*(Observational session timings; full methodology and logs in [`benchmarks/README.md`](./benchmarks/README.md).)*
 
 ---
 
-## Credits & Licenses
+## 6. Packaging Details, Licenses & Credits
 
-- **Custom Node & Installer Scripts:** [`LICENSE`](./LICENSE) / [`LICENSE-APACHE-2.0.txt`](./LICENSE-APACHE-2.0.txt) (Apache-2.0) · **`comfy-aimdo-xpu-runtime`:** [`LICENSE-GPL-3.0.txt`](./LICENSE-GPL-3.0.txt) (GPL-3.0)
-- **Full Attributions:** [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) — [`intel/llm-scaler`](https://github.com/intel/llm-scaler), [`xiangyuT/comfy-kitchen-xpu`](https://github.com/xiangyuT/comfy-kitchen-xpu), [`xiangyuT/comfy-aimdo-xpu`](https://github.com/xiangyuT/comfy-aimdo-xpu), [`Comfy-Org/comfy-aimdo`](https://github.com/Comfy-Org/comfy-aimdo), `oneDNN`, `Strata`, [`oneapi-src/level-zero`](https://github.com/oneapi-src/level-zero), [`microsoft/Detours`](https://github.com/microsoft/Detours).
+- **Bundled Binaries, Checksums & Upstream Sources:** See [`docs/packaging-and-wheels.md`](./docs/packaging-and-wheels.md) for wheel contents, SHA-256 verification, upstream source revisions, and advanced environment variables.
+- **Licenses:** Apache License 2.0 ([`LICENSE`](./LICENSE)) and GNU General Public License v3.0 ([`LICENSE-GPL-3.0.txt`](./LICENSE-GPL-3.0.txt) for `comfy-aimdo-xpu-runtime`).
+- **Attributions:** [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) (`intel/llm-scaler`, `xiangyuT/comfy-kitchen-xpu`, `xiangyuT/comfy-aimdo-xpu`, `Comfy-Org/comfy-aimdo`, `oneDNN`, `Strata`, `Level Zero`, `Detours`).

@@ -27,6 +27,7 @@ except ImportError:
 log = logging.getLogger("ComfyUI-OmniXPU")
 
 _PATCH_MARKER = "__omnixpu_dynamic_vram_boundary_original__"
+_WARNED_FALLBACK = False
 _FIT_TRIM_ENABLED = (
     _config.dynamic_vram_fit_trim
     if _config is not None
@@ -213,13 +214,9 @@ def _trim_dynamic_boundary(model_management, models, target):
         )
 
 
-def _patch_model_loader(model_management):
-    original = model_management.load_models_gpu
-    if hasattr(original, _PATCH_MARKER):
-        return
-
-    @functools.wraps(original)
-    def boundary_trimmed(models, *args, **kwargs):
+def _prepare_boundary(model_management, models, args, kwargs):
+    global _WARNED_FALLBACK
+    try:
         expanded = _expanded_models(models)
         target = _minimum_memory_target(model_management, args, kwargs)
         inference_budget = _inference_memory_budget(args, kwargs)
@@ -234,6 +231,28 @@ def _patch_model_loader(model_management):
                 ",".join(map(str, budget_devices)),
                 inference_budget / (1024 ** 2),
             )
+        return budget_scope
+    except Exception as exc:
+        if not _WARNED_FALLBACK:
+            _WARNED_FALLBACK = True
+            log.warning(
+                "[OmniXPU] DynamicVRAM boundary trim conflict (%s); "
+                "falling back to stock ComfyUI loader",
+                exc,
+            )
+        return nullcontext()
+
+
+def _patch_model_loader(model_management):
+    original = model_management.load_models_gpu
+    if hasattr(original, _PATCH_MARKER):
+        return
+
+    @functools.wraps(original)
+    def boundary_trimmed(models, *args, **kwargs):
+        budget_scope = _prepare_boundary(
+            model_management, models, args, kwargs
+        )
         with budget_scope:
             return original(models, *args, **kwargs)
 

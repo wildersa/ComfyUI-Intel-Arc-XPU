@@ -140,15 +140,17 @@ def check_environment(
     if plat != "win32" or ptr_bytes != 8:
         return (
             False,
-            f"Skipped: Windows x64 is required (detected platform={plat!r}, "
-            f"arch={platform.machine()!r}, {ptr_bytes * 8}-bit).",
+            f"CONFLICT: Windows x64 is required (detected platform={plat!r}, "
+            f"arch={platform.machine()!r}, {ptr_bytes * 8}-bit). "
+            f"Refusing to install XPU binaries.",
         )
 
     if py_ver != TARGET_PY_VERSION:
         return (
             False,
-            f"Skipped: Python 3.13 (cp313) is required for prebuilt wheels; "
-            f"detected Python {py_ver[0]}.{py_ver[1]}.",
+            f"CONFLICT: Python 3.13 (cp313) is required for bundled XPU binaries; "
+            f"detected Python {py_ver[0]}.{py_ver[1]}. "
+            f"Refusing to install XPU binaries.",
         )
 
     if torch_ver is None:
@@ -156,9 +158,10 @@ def check_environment(
     if not torch_ver or not torch_ver.startswith(TARGET_TORCH_PREFIX):
         return (
             False,
-            f"Skipped: PyTorch {TARGET_TORCH_PREFIX} is required "
-            f"(detected torch={torch_ver!r}).\n"
-            f"Install it first with:\n"
+            f"CONFLICT: PyTorch {TARGET_TORCH_PREFIX} is required "
+            f"(detected torch={torch_ver!r}). "
+            f"Refusing to install XPU binaries to avoid breaking your environment.\n"
+            f"Install PyTorch {TARGET_TORCH_PREFIX} first with:\n"
             f'  "{sys.executable}" -m pip install --upgrade '
             f"torch==2.13.0+xpu torchvision==0.28.0+xpu "
             f"--index-url https://download.pytorch.org/whl/xpu",
@@ -265,12 +268,13 @@ def obtain_wheel(
 def print_post_install_reminders(custom_nodes_dir: Optional[Path] = None) -> None:
     """Print Windows configuration reminders."""
     print("")
-    print("=== ComfyUI-Intel-Arc-XPU (v0.2.0) Setup Notes ===")
-    print("1. Attention backend on Windows:")
-    print("   Windows defaults to PyTorch SDPA unless OMNI_ATTN_BACKEND=cute is set.")
-    print("   Recommended for Intel Arc BMG: set OMNI_ATTN_BACKEND=cute")
-    print("2. DynamicVRAM (AIMDO XPU):")
-    print("   Launch ComfyUI with: --enable-dynamic-vram --reserve-vram 4")
+    print("=== ComfyUI-Intel-Arc-XPU Setup Notes ===")
+    print("1. Recommended ComfyUI launch flags (unlocks Windows DynamicVRAM + host RAM staging):")
+    print("   --enable-dynamic-vram --reserve-vram 4")
+    print("   (Kernels & quantization still run without this flag, but DynamicVRAM prevents XPU OOM on heavy models.)")
+    print("2. Optional Attention Backend (recommended for Intel Arc BMG):")
+    print("   Windows defaults to PyTorch SDPA for stability.")
+    print("   Set OMNI_ATTN_BACKEND=cute to enable CUTLASS-SYCL CUTE attention.")
     if custom_nodes_dir is not None:
         conflict = custom_nodes_dir / "comfyui-xpu-backend"
         if conflict.exists():

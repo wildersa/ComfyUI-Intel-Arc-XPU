@@ -158,66 +158,63 @@ def _copy_prefix_factory(qwen):
     return factory, None
 
 
-def _rewrite(function, replacements, helpers=None):
-    """Adapt exact upstream statements while retaining quantization/lifecycle code."""
-    if function.__closure__:
-        raise ValueError("cache method unexpectedly captures closure state")
-    source = textwrap.dedent(inspect.getsource(function))
-    if not source.startswith(f"def {function.__name__}("):
-        raise ValueError("unsupported decorated cache method")
-    for before, after in replacements:
-        if source.count(before) != 1:
-            raise ValueError(f"unsupported {function.__name__} cache contract")
-        source = source.replace(before, after)
-    namespace = dict(function.__globals__)
-    namespace.update(helpers or {})
-    exec(compile(source, inspect.getfile(function), "exec"), namespace)
-    return functools.update_wrapper(namespace[function.__name__], function)
-
-
 def _copy_pinned_cpu(tensor, device):
     try:
         host = torch.empty(tensor.shape, dtype=tensor.dtype, device=device, pin_memory=True)
     except torch.OutOfMemoryError:
-        # Match upstream's pageable fallback when host registration cannot fit.
         log.warning("[OmniXPU] KV cache pinned allocation exhausted; using pageable RAM")
         return tensor.to(device, copy=True)
-    # Cache fill completes before CPU key/slot reuse. Prefetch back to XPU uses
-    # the upstream stream waits and staging buffers; Torch owns host lifetime.
     host.copy_(tensor, non_blocking=False)
     return host
 
 
-def _pinned_put(function):
-    """Change host storage while preserving upstream pin/eviction arguments."""
-    if function.__closure__:
-        raise ValueError("cache method unexpectedly captures closure state")
+class _IdentityRemoveList(list):
+    """Avoid elementwise tensor equality inside legacy PoseBranchCache.slots.remove."""
+
+    def remove(self, item):
+        for index, elem in enumerate(self):
+            if elem is item:
+                self.pop(index)
+                return
+        raise ValueError("list.remove(x): x not in list")
+
+
+def _check_select_contract(function):
     source = textwrap.dedent(inspect.getsource(function))
-    if not source.startswith(f"def {function.__name__}("):
-        raise ValueError("unsupported decorated cache method")
-    tree = ast.parse(source)
-    expected_copy = ast.parse("t = t.to(self.store_device, copy=True)").body[0]
-    pin_calls = [ast.parse(expression, mode="eval").body for expression in (
-        "comfy.model_management.pin_memory(t)",
-        "comfy.model_management.pin_memory(t, evict_active=False)",
-    )]
-    copies, pins = [], []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and ast.dump(node) == ast.dump(expected_copy):
-            copies.append(node)
-        if isinstance(node, ast.If) and any(ast.dump(node.test) == ast.dump(call)
-                                            for call in pin_calls):
-            pins.append(node)
-    if len(copies) != 1 or len(pins) != 1:
-        raise ValueError("unsupported put cache contract")
-    copies[0].value = ast.parse("_omnixpu_copy_pinned_cpu(t, self.store_device)",
-                               mode="eval").body
-    pins[0].test = ast.BoolOp(op=ast.And(), values=[
-        ast.parse("not t.is_pinned()", mode="eval").body, pins[0].test])
-    ast.fix_missing_locations(tree)
-    namespace = {**function.__globals__, "_omnixpu_copy_pinned_cpu": _copy_pinned_cpu}
-    exec(compile(tree, inspect.getfile(function), "exec"), namespace)
-    return functools.update_wrapper(namespace[function.__name__], function)
+    if "self.slots.remove(s)" not in source:
+        raise ValueError("unsupported select cache contract")
+
+
+def _select_with_identity_remove(original_select, cache_self, k, create=True):
+    slots = getattr(cache_self, "slots", None)
+    if isinstance(slots, list) and not isinstance(slots, _IdentityRemoveList):
+        cache_self.slots = _IdentityRemoveList(slots)
+    try:
+        return original_select(cache_self, k, create=create)
+    finally:
+        current = getattr(cache_self, "slots", None)
+        if isinstance(current, _IdentityRemoveList):
+            cache_self.slots = list(current)
+
+
+def _wrap_legacy_put(original_put, mm):
+    def put(self, i, t):
+        prev_store = getattr(self, "store_device", None)
+        if prev_store is None or t.device.type != "xpu" or prev_store.type != "cpu":
+            return original_put(self, i, t)
+        pinned = _copy_pinned_cpu(t, prev_store)
+        if pinned is t:
+            return original_put(self, i, t)
+        orig_pin = mm.pin_memory
+        mm.pin_memory = lambda tensor, *args, **kwargs: (
+            tensor if tensor is pinned else orig_pin(tensor, *args, **kwargs)
+        )
+        try:
+            return original_put(self, i, pinned)
+        finally:
+            mm.pin_memory = orig_pin
+
+    return functools.update_wrapper(put, original_put)
 
 
 def _invalidate_writable_prefix_cache(cache):
@@ -326,11 +323,8 @@ def apply():
         reset = inspect.getsource(qwen.QwenImage21Transformer2DModel.reset_prefix_cache)
         if "self.prefix_cache.free()" not in reset or "self.prefix_cache_enabled = enabled" not in reset:
             raise ValueError("unsupported Qwen Image 2.1 cache reset contract")
-        select_xpu = _rewrite(original_select, (
-            ("for s in self.slots:", "for index, s in enumerate(self.slots):"),
-            ("self.slots.remove(s)", "self.slots.pop(index)"),
-        ))
-        put_xpu = _pinned_put(original_put)
+        _check_select_contract(original_select)
+        put_xpu = _wrap_legacy_put(original_put, mm)
         copy_factory, copy_error = _copy_prefix_factory(qwen)
         if copy_error is not None:
             raise ValueError(copy_error)
@@ -341,7 +335,7 @@ def apply():
     def select(self, k, create=True):
         if k.device.type != "xpu":
             return original_select(self, k, create=create)
-        return select_xpu(self, k, create=create)
+        return _select_with_identity_remove(original_select, self, k, create=create)
 
     @functools.wraps(original_put)
     def put(self, i, t):

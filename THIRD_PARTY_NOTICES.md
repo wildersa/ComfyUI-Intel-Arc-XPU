@@ -1,9 +1,9 @@
 # Third-Party Notices and Licenses
 
-This repository packages Windows-ready Intel Arc XPU (`xpu`) integration for ComfyUI, combining upstream `ComfyUI-OmniXPU` with prebuilt Windows wheels distributed via GitHub Release `v0.2.0`.
+This repository packages Windows-ready Intel Arc XPU (`xpu`) integration for ComfyUI, combining upstream `ComfyUI-OmniXPU` with bundled Windows binary wheels in [`wheels/`](./wheels) (and mirrored in GitHub Release `v0.2.0`).
 
 - Repository custom-node code and installer scripts: **Apache License 2.0** ([`LICENSE`](./LICENSE) / [`LICENSE-APACHE-2.0.txt`](./LICENSE-APACHE-2.0.txt))
-- `comfy-aimdo-xpu-runtime` binary wheel (Release `v0.2.0` asset): **GNU General Public License v3.0 (GPL-3.0)** ([`LICENSE-GPL-3.0.txt`](./LICENSE-GPL-3.0.txt))
+- `comfy-aimdo-xpu-runtime` bundled wheel: **GNU General Public License v3.0 (GPL-3.0)** ([`LICENSE-GPL-3.0.txt`](./LICENSE-GPL-3.0.txt))
 
 ---
 

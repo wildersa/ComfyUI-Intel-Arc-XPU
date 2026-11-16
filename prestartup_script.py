@@ -70,6 +70,19 @@ def _requested_fraction() -> tuple[float, str] | None:
     return None
 
 
+_TARGET_PY = (3, 13)
+_TARGET_TORCH_PREFIX = "2.13.0+xpu"
+
+
+def _log_conflict_and_disable(reason: str) -> None:
+    _LOG.error(
+        "[OmniXPU] CONFLICT: ComfyUI-Intel-Arc-XPU requires Windows x64, Python 3.13, "
+        "and torch==2.13.0+xpu with Intel XPU available (%s). "
+        "Extension prestartup disabled cleanly; ComfyUI will continue with stock behavior.",
+        reason,
+    )
+
+
 def apply_xpu_memory_fraction() -> float | None:
     """Apply the caching-allocator fraction selected for this platform."""
 
@@ -77,6 +90,12 @@ def apply_xpu_memory_fraction() -> float | None:
         _LOG.info(
             "[OmniXPU] XPU allocator memory fraction skipped because %s=0",
             _MASTER_ENV_NAME,
+        )
+        return None
+
+    if sys.platform == "win32" and sys.version_info[:2] != _TARGET_PY:
+        _log_conflict_and_disable(
+            f"detected Python {sys.version_info[0]}.{sys.version_info[1]}"
         )
         return None
 
@@ -88,19 +107,29 @@ def apply_xpu_memory_fraction() -> float | None:
     try:
         import torch
     except Exception as exc:
-        _fail(f"could not import torch: {exc}")
+        _log_conflict_and_disable(f"could not import torch: {exc}")
+        return None
 
+    torch_ver = str(getattr(torch, "__version__", ""))
     xpu = getattr(torch, "xpu", None)
     try:
         available = xpu is not None and xpu.is_available()
     except Exception as exc:
-        _fail(f"could not query torch.xpu availability: {exc}")
+        _log_conflict_and_disable(f"torch={torch_ver!r}, xpu query failed: {exc}")
+        return None
     if not available:
-        _fail("torch.xpu is unavailable")
+        _log_conflict_and_disable(f"torch={torch_ver!r}, torch.xpu unavailable")
+        return None
+    if not torch_ver.startswith(_TARGET_TORCH_PREFIX):
+        _log_conflict_and_disable(f"detected incompatible torch=={torch_ver}")
+        return None
 
     setter = getattr(xpu, "set_per_process_memory_fraction", None)
     if not callable(setter):
-        _fail("is unsupported by this PyTorch build")
+        _log_conflict_and_disable(
+            f"torch=={torch_ver} does not expose set_per_process_memory_fraction"
+        )
+        return None
 
     try:
         setter(fraction)
@@ -119,5 +148,12 @@ def apply_xpu_memory_fraction() -> float | None:
     return actual
 
 
-apply_runtime_providers()
+if (
+    os.environ.get(_MASTER_ENV_NAME, "1") != "0"
+    and sys.platform == "win32"
+    and sys.version_info[:2] == _TARGET_PY
+):
+    apply_runtime_providers()
+elif sys.platform != "win32":
+    apply_runtime_providers()
 apply_xpu_memory_fraction()

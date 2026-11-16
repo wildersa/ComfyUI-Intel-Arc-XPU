@@ -1,50 +1,64 @@
 """Let upstream block-sparse eligibility recognize Kitchen's native XPU API."""
 from __future__ import annotations
 
-import ast
+import functools
 import inspect
 import sys
-import textwrap
-from functools import update_wrapper
 from pathlib import Path
 
 _MARKER = "__omnixpu_sparse_eligibility_original__"
 
 
-def _extend_device_guard(function, tensor_name):
-    """Change one explicit CUDA exclusion while retaining the upstream body."""
-    if function.__closure__:
-        raise ValueError("upstream eligibility unexpectedly captures closure state")
-    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
-    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.FunctionDef):
-        raise ValueError("upstream eligibility source is not a function")
-    definition = tree.body[0]
-    if definition.name != function.__name__ or definition.decorator_list:
-        raise ValueError("upstream eligibility definition is unsupported")
-    guards = []
-    expected = ast.dump(ast.parse(f"{tensor_name}.device.type", mode="eval").body)
-    for node in ast.walk(definition):
-        if (isinstance(node, ast.Compare) and len(node.ops) == 1
-                and isinstance(node.ops[0], ast.NotEq)
-                and ast.dump(node.left) == expected
-                and len(node.comparators) == 1
-                and isinstance(node.comparators[0], ast.Constant)
-                and node.comparators[0].value == "cuda"):
-            guards.append(node)
-    if len(guards) != 1:
-        raise ValueError("expected exactly one explicit CUDA device exclusion")
-    guards[0].ops = [ast.NotIn()]
-    guards[0].comparators = [ast.Tuple(
-        elts=[ast.Constant("cuda"), ast.Constant("xpu")], ctx=ast.Load())]
-    for node in ast.walk(definition):
-        if isinstance(node, ast.Constant) and node.value == "not on CUDA":
-            node.value = "not on CUDA or XPU"
-    namespace = {}
-    exec(compile(ast.fix_missing_locations(tree), inspect.getfile(function), "exec"),
-         function.__globals__, namespace)
-    adapted = update_wrapper(namespace[function.__name__], function)
-    setattr(adapted, _MARKER, function)
-    return adapted
+def _make_ineligible_wrapper(original, upstream, ck):
+    @functools.wraps(original)
+    def _ineligible(q, k, v, dim_head):
+        if q.device.type != "xpu":
+            return original(q, k, v, dim_head)
+        head_dim = upstream.HEAD_DIM
+        if not ck.sol_attn_is_available(q.device):
+            return "no compiled sol_attn kernel for this GPU"
+        import torch
+
+        if q.dtype not in (torch.bfloat16, torch.float16, torch.float32):
+            return f"dtype {q.dtype} (kernel takes bf16/fp16)"
+        if dim_head != head_dim:
+            return f"head_dim {dim_head} != {head_dim}"
+        if q.shape != k.shape or q.shape != v.shape:
+            return "cross-attention or GQA (kept dense)"
+        if k.dtype != q.dtype or v.dtype != q.dtype:
+            return f"mixed dtypes {q.dtype}/{k.dtype}/{v.dtype}"
+        return None
+
+    setattr(_ineligible, _MARKER, original)
+    return _ineligible
+
+
+def _make_h3_eligible_wrapper(original, upstream, ck):
+    @functools.wraps(original)
+    def h3_eligible(attn, x, rope_freqs, transformer_options, patch, block_index):
+        if x.device.type != "xpu":
+            return original(attn, x, rope_freqs, transformer_options, patch, block_index)
+        import torch
+
+        head_dim = upstream.HEAD_DIM
+        n_tokens = x.shape[0]
+        if rope_freqs is None or x.dtype != torch.bfloat16 or attn.head_dim != head_dim:
+            return False
+        reason = patch.dense_reason(transformer_options, n_tokens, block_index)
+        if reason is None and not ck.sol_attn_is_available(x.device):
+            reason = "no compiled sol_attn kernel for this GPU"
+        if reason is not None:
+            patch.log_once(("dense", n_tokens, reason), f"dense ({n_tokens} tokens): {reason}")
+            return False
+        if patch.vsa:
+            layout = transformer_options.get("minimax_h3_layout")
+            if layout is None or layout.seq_len != n_tokens:
+                patch.log_once("no_layout", "no H3 layout for this call; running dense")
+                return False
+        return True
+
+    setattr(h3_eligible, _MARKER, original)
+    return h3_eligible
 
 
 def _upstream_module():
@@ -76,10 +90,15 @@ def apply():
             return True, "already patched"
         if any(hasattr(f, _MARKER) for f in functions):
             return False, "upstream sparse eligibility is partially patched"
-        # Build both replacements before changing either module binding.
-        generic = _extend_device_guard(functions[0], "q")
-        h3 = _extend_device_guard(functions[1], "x")
-    except (ImportError, AttributeError, OSError, TypeError, ValueError, SyntaxError) as exc:
+        if tuple(inspect.signature(functions[0]).parameters) != ("q", "k", "v", "dim_head"):
+            raise ValueError("unsupported _ineligible signature")
+        if tuple(inspect.signature(functions[1]).parameters) != (
+            "attn", "x", "rope_freqs", "transformer_options", "patch", "block_index"
+        ):
+            raise ValueError("unsupported h3_eligible signature")
+        generic = _make_ineligible_wrapper(functions[0], upstream, ck)
+        h3 = _make_h3_eligible_wrapper(functions[1], upstream, ck)
+    except (ImportError, AttributeError, OSError, TypeError, ValueError) as exc:
         return False, f"upstream sparse eligibility is unsupported: {exc}"
     upstream._ineligible, upstream.h3_eligible = generic, h3
     return True, ""

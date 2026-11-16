@@ -146,4 +146,14 @@ class OmniXPUStatus:
             except Exception:
                 pass
 
+        # Setup reminder when native runtime binaries are missing (e.g. Registry-only install)
+        kernel_ready = bool(probe and getattr(probe, "version", None))
+        if not kernel_ready:
+            lines.append("")
+            lines.append("  [Setup Required for Full Acceleration]")
+            lines.append("    1. Prerequisite: Windows x64 + Python 3.13 + torch==2.13.0+xpu")
+            lines.append("    2. Install native XPU binaries: see https://github.com/wildersa/ComfyUI-Intel-Arc-XPU")
+            lines.append("       (Registry packages cannot bundle .whl binaries; run install.ps1 or install.py)")
+            lines.append("    3. Launch flags: --enable-dynamic-vram --reserve-vram 4 (optional: OMNI_ATTN_BACKEND=cute)")
+
         return ("\n".join(lines),)

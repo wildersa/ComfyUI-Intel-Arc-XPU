@@ -156,22 +156,73 @@ def project_qkv(module, x):
 
 def apply():
     import comfy.ldm.qwen_image21.model as qwen
+    import comfy.model_management as mm
+    import comfy.ops
+    import comfy.quant_ops
+
     original = qwen.Attention.forward
     if hasattr(original, _MARKER):
         return True, "already applied"
     old = """q = self.to_q(x).view(B, N, self.heads, -1)
     k = self.to_k(x).view(B, N, self.heads, -1)
     v = self.to_v(x).view(B, N, self.heads, -1)"""
-    new = """q, k, v = _omnixpu_project_qkv(self, x)
-    q = q.view(B, N, self.heads, -1)
-    k = k.view(B, N, self.heads, -1)
-    v = v.view(B, N, self.heads, -1)"""
     source = textwrap.dedent(inspect.getsource(original))
-    if original.__closure__ or source.count(old) != 1:
+    expected_tail = "self.to_out[0](attn_fn(q, k, v, self.heads, preferred_attention=self.comfy_attention))"
+    if (
+        original.__closure__
+        or source.count(old) != 1
+        or expected_tail not in source
+        or tuple(inspect.signature(original).parameters)
+        != ("self", "x", "pe", "attn_fn", "prefix_len", "transformer_options")
+    ):
         raise RuntimeError("unsupported Qwen Image 2.1 attention source")
-    namespace = dict(original.__globals__, _omnixpu_project_qkv=project_qkv)
-    exec(compile(source.replace(old, new), inspect.getfile(original), "exec"), namespace)
-    replacement = functools.update_wrapper(namespace[original.__name__], original)
+
+    @functools.wraps(original)
+    def replacement(self, x, pe, attn_fn, prefix_len, transformer_options={}):
+        if x.device.type != "xpu":
+            return original(self, x, pe, attn_fn, prefix_len, transformer_options=transformer_options)
+        B, N, _ = x.shape
+        q, k, v = project_qkv(self, x)
+        q = q.view(B, N, self.heads, -1)
+        k = k.view(B, N, self.heads, -1)
+        v = v.view(B, N, self.heads, -1)
+        patches = transformer_options.get("patches", {}).get("attn1_patch", [])
+        if mm.in_training or patches:
+            q, k = self.norm_q(q), self.norm_k(k)
+            if patches:
+                q, k, v, pe = (
+                    q.transpose(1, 2),
+                    k.transpose(1, 2),
+                    v.transpose(1, 2),
+                    pe.transpose(1, 2),
+                )
+                extra_options = {**transformer_options, "img_slice": [prefix_len, N]}
+                for p in patches:
+                    out = p(q, k, v, pe=pe, attn_mask=None, extra_options=extra_options)
+                    q, k, v, pe = (
+                        out.get("q", q),
+                        out.get("k", k),
+                        out.get("v", v),
+                        out.get("pe", pe),
+                    )
+                q, k, v, pe = (
+                    q.transpose(1, 2).contiguous(),
+                    k.transpose(1, 2).contiguous(),
+                    v.transpose(1, 2).contiguous(),
+                    pe.transpose(1, 2).contiguous(),
+                )
+            q = qwen.apply_rope1(q, pe)
+            k = qwen.apply_rope1(k, pe)
+        else:
+            q_scale, _, q_stream = comfy.ops.cast_bias_weight(self.norm_q, q, offloadable=True)
+            k_scale, _, k_stream = comfy.ops.cast_bias_weight(self.norm_k, k, offloadable=True)
+            q, k = comfy.quant_ops.ck.rms_rope(q, k, pe, q_scale, k_scale, self.norm_q.eps)
+            comfy.ops.uncast_bias_weight(self.norm_q, q_scale, None, q_stream)
+            comfy.ops.uncast_bias_weight(self.norm_k, k_scale, None, k_stream)
+        container = qwen.AttentionTensorContainer
+        q, k, v = container(q), container(k), container(v)
+        return self.to_out[0](attn_fn(q, k, v, self.heads, preferred_attention=self.comfy_attention))
+
     setattr(replacement, _MARKER, original)
     qwen.Attention.forward = replacement
     return True, ""
