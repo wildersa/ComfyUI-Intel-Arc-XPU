@@ -1,15 +1,19 @@
-# Benchmarks & Reference Timings
+# Benchmarks
 
-Observational timings recorded on **Windows 11 (`Intel Arc Pro B70`, `xpu:0`, ComfyUI `v0.45.3`, `torch==2.13.0+xpu`)** using `ComfyUI-OmniXPU`, `omni_xpu_kernel==0.2.0b3+torch213.bmg`, `comfy-kitchen-xpu-runtime==0.2.41`, and `comfy-aimdo-xpu-runtime==0.6.0` (`--enable-dynamic-vram --reserve-vram 4`).
+Measured on **Windows 11 (`Intel Arc Pro B70`, `xpu:0`, `torch==2.13.0+xpu`)**.
+- **Stock ComfyUI:** clean instance without `ComfyUI-Intel-Arc-XPU` (`DynamicVRAM` off, stock PyTorch ops).
+- **With Extension:** `ComfyUI-Intel-Arc-XPU` (`omni_xpu_kernel==0.2.0b3+torch213.bmg`, `comfy-kitchen-xpu-runtime==0.2.41`, `comfy-aimdo-xpu-runtime==0.6.0`, `--enable-dynamic-vram`), showing both `OMNI_ATTN_BACKEND=torch` and `OMNI_ATTN_BACKEND=cute`.
 
-## Reference Runs
+## Comparison Table
 
-| Workload | Settings | Baseline / Prior Run | `OmniXPU` + `DynamicVRAM` |
-| --- | --- | --- | --- |
-| **`Qwen Image 2.1 T2I`** | `qwen_image_2.1_int8_convrot`, `1024×1024`, `25` steps `euler`, direct prompt *(no PE)* | `12.58s` warm (`torch`) | **`21.76s`–`23.41s`** cold · **`11.65s`–`11.69s`** warm (`cute`, `0.41 s/it`) |
-| **`WAN_Animate2`** | `wan_animate_2_int8_convrot`, `2 × 6` steps | `XPU out of memory` at step `0/6` (3 attempts) | **`370.91s`** (`31.1s/it` pass 1, `15.4s/it` pass 2, **0 OOMs**) |
-| **`MiniMax H3 Ref2VA`** | `8-step v1.1` Turbo LoRA, `960×544`, `8s` (`192` frames + audio), `res_multistep` | — *(reference only)* | **`281.92s`–`297.45s`** (`fp8_scaled`, `torch`) · `305.14s` (`int8_convrot`, `cute`) |
-| **`Z-Image Turbo`** | `z_image_turbo_bf16` + `qwen_3_4b` (`lumina2`), `1024×1024`, `8` steps `res_multistep`, `cfg=1.0`, `cute` *(ComfyUI `v0.45.4`)* | — *(reference only)* | **`33.41s`** cold (`1.82–1.85 it/s`, model load + warmup) · **`5.18s`–`5.27s`** warm (`1.71–1.72 it/s`) |
+| Model | Config | Stock ComfyUI | With Extension (`torch`) | With Extension (`cute`) | Speedup vs Stock |
+| --- | --- | --- | --- | --- | --- |
+| **`MOSS-Image`** | `int8_convrot` + `W4A8`, `25` steps | `375.28s` cold · `50.75s` warm | `103.45s` cold · `20.01s` warm | **`29.53s`** cold · **`18.27s`** warm | **`12.7×` cold · `2.78×` warm** (`cute`) |
+| **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | **`209.29s`** cold | — *(8-step ref below)* | **`1.91×` cold** (`torch`) |
+| **`Qwen Image 2.1 T2I`** | `int8_convrot`, `1024×1024`, `25` steps | — *(not tested)* | `22.48s` cold · `12.58s` warm | **`21.51s`** cold · **`11.38s`** warm | `1.05×` cold · `1.11×` warm (`cute` vs `torch`) |
+| **`Z-Image Turbo`** | `bf16`, `1024×1024`, `8` steps | — *(not tested)* | — | **`33.41s`** cold · **`5.19s`–`5.27s`** warm | — *(reference, `1.71–1.72 it/s`)* |
+| **`WAN 2.2 T2V 14B`** | `fp8_scaled`, `2` steps (Turbo) | — *(not tested)* | `104.37s` cold | **`93.09s`** cold · **`82.62s`** warm | `1.12×` cold (`cute` vs `torch`) |
+| **`MiniMax H3 Ref2VA` (8-step)** | `8`-step Turbo, `960×544`, `8s` + audio | — *(not tested)* | **`293.36s`** (`fp8_scaled`) · `86.31s` (`int8_convrot` warm) | **`70.88s`** (`int8_convrot` warm) | — *(reference, `0.00 ms` AV drift)* |
 
 ## Sample Outputs
 
@@ -57,5 +61,6 @@ All three PNGs below embed the full ComfyUI `prompt` and `workflow` metadata (`z
 
 ## Notes
 
-- These numbers come from real session logs rather than controlled single-variable A/B tests (`WAN_Animate2` baseline crashed on `torch==2.12.1+xpu` before DynamicVRAM; `MiniMax H3` reference runs used different diffusion weights for `torch` vs. `cute`).
+- Stock ComfyUI baselines (`MOSS-Image` and `MiniMax H3 Ref2VA` 20-step) and extension runs share the same `torch==2.13.0+xpu` build on Windows 11 (`Intel Arc Pro B70`).
+- Rows marked `— (not tested)` have no `torch==2.13.0+xpu` stock baseline yet and reflect `torch` vs. `cute` extension runs or reference timings.
 - No host-specific paths, LUIDs, usernames, or credentials are stored in this directory.

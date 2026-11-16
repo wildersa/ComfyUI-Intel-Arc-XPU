@@ -97,16 +97,17 @@ DynamicVRAM support detected and enabled
 
 ## 5. Benchmarks & Telemetry
 
-Reference timings recorded on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)**:
+Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** comparing stock ComfyUI (no extension, `DynamicVRAM` off) against `ComfyUI-Intel-Arc-XPU` (`--enable-dynamic-vram`):
 
-| Workflow | Config | Stock / Prior | With `ComfyUI-Intel-Arc-XPU` + `DynamicVRAM` |
-| --- | --- | --- | --- |
-| **`Qwen Image 2.1 T2I`** | `25` steps, `int8_convrot`, `1024×1024` | `12.58s` warm (`torch`) | **`11.65s`–`11.69s`** warm (`21.76s`–`23.41s` cold) |
-| **`WAN_Animate2`** | `2 × 6` steps, `int8_convrot` | `XPU OOM` at step `0/6` | **`370.91s`** (`0` OOMs) |
-| **`MiniMax H3 Ref2VA`** | `8` steps turbo, `960×544`, `8s` + audio | — *(reference)* | **`281.92s`–`297.45s`** · [sample MP4](./benchmarks/assets/minimax_h3_ref2va_8s_b70.mp4) |
-| **`Z-Image Turbo`** | `8` steps `bf16`, `1024×1024`, `cute` | — *(reference)* | **`33.41s`** cold · **`5.18s`–`5.27s`** warm · [samples](./benchmarks/README.md#sample-outputs) |
+| Model | Config | Stock ComfyUI | With Extension (`torch`) | With Extension (`cute`) |
+| --- | --- | --- | --- | --- |
+| **`MOSS-Image`** | `int8_convrot` + `W4A8`, `25` steps | `375.28s` cold · `50.75s` warm | `103.45s` cold · `20.01s` warm | **`29.53s`** cold (`12.7×`) · **`18.27s`** warm (`2.78×`) |
+| **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | **`209.29s`** cold (`1.91×`) | — *(see `8`-step ref)* |
+| **`Qwen Image 2.1 T2I`** | `int8_convrot`, `1024×1024`, `25` steps | — *(not tested)* | `22.48s` cold · `12.58s` warm | **`21.51s`** cold · **`11.38s`** warm |
+| **`Z-Image Turbo`** | `bf16`, `1024×1024`, `8` steps | — *(not tested)* | — | **`33.41s`** cold · **`5.19s`–`5.27s`** warm |
+| **`WAN 2.2 T2V 14B`** | `fp8_scaled`, `2` steps (Turbo) | — *(not tested)* | `104.37s` cold | **`93.09s`** cold · **`82.62s`** warm |
 
-*(Observational session timings; full methodology and logs in [`benchmarks/README.md`](./benchmarks/README.md).)*
+Full tables and sample outputs in [`benchmarks/README.md`](./benchmarks/README.md).
 
 ---
 
