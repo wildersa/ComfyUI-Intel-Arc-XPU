@@ -102,12 +102,12 @@ Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** c
 | Model | Config | Stock ComfyUI (OOTB) | With Extension (`torch`) | With Extension (`cute`) |
 | --- | --- | --- | --- | --- |
 | **`MOSS-Image`** | `int8_convrot` + `W4A8`, `25` steps | `375.28s` cold · `50.75s` warm | `103.45s` cold · `20.01s` warm | **`29.53s`** cold (`12.7×`) · **`18.27s`** warm (`2.78×`) |
-| **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | **`209.29s`** cold (`1.91×`) | — *(see `8`-step ref)* |
+| **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | `209.29s` cold · `179.84s` warm | **`186.08s`** cold (`2.15×`) · **`160.25s`** warm (`9.87×`) |
 | **`Qwen Image 2.1 T2I`** | `int8_convrot`, `1024×1024`, `25` steps | — *(not tested)* | `22.48s` cold · `12.58s` warm | **`21.51s`** cold · **`11.38s`** warm |
 | **`Z-Image Turbo`** | `bf16`, `1024×1024`, `8` steps | — *(not tested)* | — | **`33.41s`** cold · **`5.19s`–`5.27s`** warm |
 | **`WAN 2.2 T2V 14B`** | `fp8_scaled`, `2` steps (Turbo) | — *(not tested)* | `104.37s` cold | **`93.09s`** cold · **`82.62s`** warm |
 
-Full tables and sample outputs in [`benchmarks/README.md`](./benchmarks/README.md).
+<sub>**`cold`** = first run (loading models from disk + XPU/kernel warmup) · **`warm` (hot)** = subsequent runs with models/caches already loaded. Full tables and sample outputs in [`benchmarks/README.md`](./benchmarks/README.md).</sub>
 
 ---
 
