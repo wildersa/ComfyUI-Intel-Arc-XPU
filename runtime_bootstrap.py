@@ -500,7 +500,7 @@ def _activate_aimdo(
         spec.loader.exec_module(control)
 
         if sys.platform == "win32" and "torch" not in sys.modules:
-            __import__("torch")
+            import torch  # noqa: F401
         initialized = control.init(
             implementation="xpu",
             simple_vram_headroom=simple_vram_headroom,

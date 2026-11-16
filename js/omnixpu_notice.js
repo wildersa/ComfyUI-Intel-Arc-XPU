@@ -36,8 +36,10 @@ app.registerExtension({
         window[NOTICE_GUARD_KEY] = true;
 
         try {
-            const fetcher = api?.fetchApi ? api.fetchApi.bind(api) : fetch;
-            const resp = await fetcher("/omnixpu/setup-status");
+            const resp =
+                api && typeof api.fetchApi === "function"
+                    ? await api.fetchApi("/omnixpu/setup-status")
+                    : await fetch("/omnixpu/setup-status");
             if (!resp.ok) {
                 return;
             }
