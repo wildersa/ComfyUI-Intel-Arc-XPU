@@ -112,7 +112,7 @@ Reference timings recorded on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch
 
 ## 6. Licenses, Upstream Sources & Advanced Variables
 
-- **Prefer Not to Use Prebuilt Binaries?** Follow Intel's official `omni` stack and custom-node instructions directly at **<https://github.com/intel/llm-scaler/tree/main/omni>** and **<https://github.com/intel/llm-scaler/tree/main/omni/ComfyUI-OmniXPU>** to build/install from Intel's sources. Self-built compilation setups are out of scope for this repository.
+- **Prefer Not to Use Prebuilt Binaries?** Follow Intel's official `omni` stack and custom-node instructions directly at **<https://github.com/intel/llm-scaler/tree/main/omni>** and **<https://github.com/intel/llm-scaler/tree/main/omni/ComfyUI-OmniXPU>** to build/install from Intel's sources.
 - **Licenses:** Apache License 2.0 ([`LICENSE`](./LICENSE)) and GNU General Public License v3.0 ([`LICENSE-GPL-3.0.txt`](./LICENSE-GPL-3.0.txt) for `comfy-aimdo-xpu-runtime`).
 - **Attributions & Checksums:** [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) (`intel/llm-scaler`, `xiangyuT/comfy-kitchen-xpu`, `xiangyuT/comfy-aimdo-xpu`, `Comfy-Org/comfy-aimdo`, `oneDNN`, `Strata`, `Level Zero`, `Detours`) · [`SHA256SUMS.txt`](./SHA256SUMS.txt).
 
