@@ -95,7 +95,19 @@ DynamicVRAM support detected and enabled
 
 ---
 
-## 5. Benchmarks & Telemetry
+## 5. Workflow Compatibility (Using the XPU Kernels)
+
+Having `torch==2.13.0+xpu`, `omni_xpu_kernel`, and `DynamicVRAM` installed is only half the setup — **your workflow also needs to hit native XPU paths** instead of emulated formats or CUDA-only custom nodes:
+
+- **Weights (`int8_convrot` vs. `fp8_scaled`):** Prefer `int8_convrot` / `int8_tensorwise` checkpoints over NVIDIA-oriented `fp8_scaled` weights when available (FP8 often falls back to FP16 emulation on Intel Arc BMG).
+- **Attention & CUDA nodes:** In workflows imported from NVIDIA setups, switch `ModelAttentionBackend` from `comfy kitchen attention` to **`pytorch attention`** and bypass CUDA-only nodes (`sol-attn`, `SageAttention`, TensorRT/Triton-only packs).
+- **Live diagnostics ([`ComfyUI-XPU-Advisor`](https://github.com/wildersa/ComfyUI-XPU-Advisor)):** Install our companion advisor extension to get live UI alerts whenever a workflow loads emulated FP8 weights, triggers Shared GPU Memory spills, or hits CUDA-only fallbacks.
+
+See **[`WORKFLOW_COMPATIBILITY.md`](./WORKFLOW_COMPATIBILITY.md)** for the full workflow checklist and verification steps.
+
+---
+
+## 6. Benchmarks & Telemetry
 
 Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** comparing **Stock ComfyUI (OOTB)** (out-of-the-box, no extension, `DynamicVRAM` off) against **`ComfyUI-Intel-Arc-XPU`** (`--enable-dynamic-vram`):
 
@@ -105,13 +117,14 @@ Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** c
 | **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | `209.29s` cold · `179.84s` warm | **`186.08s`** cold (`2.15×`) · **`160.25s`** warm (`9.87×`) |
 | **`Qwen Image 2.1 T2I`** | `int8_convrot`, `1024×1024`, `25` steps | — *(not tested)* | `22.48s` cold · `12.58s` warm | **`21.51s`** cold · **`11.38s`** warm |
 | **`Z-Image Turbo`** | `bf16`, `1024×1024`, `8` steps | — *(not tested)* | — | **`33.41s`** cold · **`5.19s`–`5.27s`** warm |
-| **`WAN 2.2 T2V 14B`** | `fp8_scaled`, `2` steps (Turbo) | — *(not tested)* | `104.37s` cold | **`93.09s`** cold · **`82.62s`** warm |
+| **`WAN 2.2 T2V 14B` (4-step LightX2V)** | `fp8_scaled` + `lightx2v` LoRA, `4` steps (`2+2`), `cfg=1.0` | — *(not tested)* | `104.37s` cold | **`93.09s`** cold · **`82.62s`** warm |
+| **`WAN 2.2 T2V 14B` (Standard 20-step)** | `fp8_scaled`, `20` steps (`10+10`), `cfg=3.5` *(template default, LoRA bypassed)* | — *(not tested)* | `777.00s` | **`685.00s`–`696.00s`** |
 
 <sub>**`cold`** = first run (loading models from disk + XPU/kernel warmup) · **`warm` (hot)** = subsequent runs with models/caches already loaded. Full tables and sample outputs in [`benchmarks/README.md`](./benchmarks/README.md).</sub>
 
 ---
 
-## 6. Licenses, Upstream Sources & Advanced Variables
+## 7. Licenses, Upstream Sources & Advanced Variables
 
 - **Prefer Not to Use Prebuilt Binaries?** Follow Intel's official `omni` stack and custom-node instructions directly at **<https://github.com/intel/llm-scaler/tree/main/omni>** and **<https://github.com/intel/llm-scaler/tree/main/omni/ComfyUI-OmniXPU>** to build/install from Intel's sources.
 - **Licenses:** Apache License 2.0 ([`LICENSE`](./LICENSE)) and GNU General Public License v3.0 ([`LICENSE-GPL-3.0.txt`](./LICENSE-GPL-3.0.txt) for `comfy-aimdo-xpu-runtime`).
