@@ -1,6 +1,11 @@
 # ComfyUI-Intel-Arc-XPU
 
-Native **Intel Arc Battlemage (`bmg` / Arc Pro B70)** acceleration for **ComfyUI on Windows**, combining `ComfyUI-OmniXPU` model adapters and diagnostics with Windows XPU compute kernels, `comfy-kitchen` XPU backend, and `DynamicVRAM` support — zero core ComfyUI files modified.
+**The problem:** Out of the box, ComfyUI on Windows does **not** ship native **Intel Arc (`xpu`)** compute kernels, an XPU backend for `comfy-kitchen`, Windows `DynamicVRAM` (`comfy-aimdo` XPU overlay), or Intel XPU model adapters. Even with PyTorch XPU installed, stock ComfyUI falls back to generic PyTorch paths, slow weight emulation, and static VRAM allocation — causing multi-minute stalls or `XPU out of memory` on large image and video models.
+
+**What this extension solves:** `ComfyUI-Intel-Arc-XPU` brings native **Intel Arc Battlemage (`bmg` / Arc Pro B70)** acceleration to **ComfyUI on Windows** as a drop-in custom node extension (**zero core ComfyUI files modified**):
+- Bundled **Windows XPU native kernels** (`omni_xpu_kernel`: SDP/attention, norms, rotary, INT8, FP8, layout) and `comfy-kitchen` XPU backend (`INT8`, `ConvRot`, `W4A8`, `FP8`).
+- **Windows `DynamicVRAM`** (`comfy-aimdo-xpu-runtime`) with host RAM weight staging so large models (`WAN`, `MiniMax H3`, `FLUX`, `Qwen`) run without OOM.
+- **Model adapters & `CUTE` FMHA attention routing** from `ComfyUI-OmniXPU`, plus diagnostics (`OmniXPU Status`) and clean fallbacks if ComfyUI updates.
 
 ---
 
