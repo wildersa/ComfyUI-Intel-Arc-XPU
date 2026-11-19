@@ -27,9 +27,11 @@ Your Windows ComfyUI environment **must** already have **Windows 11 x64**, **Pyt
 
 ## 2. Installation
 
-### Option A — ComfyUI Manager / Comfy Registry *(+ 1 extra binary step on Windows)*
+Choose **one** of the options below (you do **not** need to run multiple options).
 
-Per **Comfy Registry security standards**, Registry packages exclude prebuilt `.whl` binaries and automated `pip` installers. Installing **`ComfyUI Intel Arc XPU (OmniXPU Windows)`** (`comfyui-intel-arc-xpu`) via the Manager Registry installs the Python adapters, conflict checks, and the **`OmniXPU Status`** diagnostic node — then finish setup with this **one extra PowerShell step**:
+### Option A — PowerShell All-in-One Install *(Recommended)*
+
+Clone anywhere and run `.\install.ps1`:
 
 ```powershell
 git clone https://github.com/wildersa/ComfyUI-Intel-Arc-XPU.git
@@ -37,11 +39,20 @@ cd ComfyUI-Intel-Arc-XPU
 .\install.ps1
 ```
 
-*(If you already have the extension folder via Registry, running `.\install.ps1` updates/installs the XPU runtime packages in your active ComfyUI `.venv` cleanly.)*
+`install.ps1` automatically searches standard ComfyUI locations (Comfy Desktop, `%USERPROFILE%\ComfyUI`, `C/D/E:\ComfyUI*`), asks only if multiple installs exist or none are found (or pass `-ComfyPath "<path>"`), copies the extension into `custom_nodes\ComfyUI-Intel-Arc-XPU`, and installs the verified `.whl` binaries into your ComfyUI `.venv`.
 
-### Option B — Direct GitHub Install *(All-in-One via Git Clone or Git URL)*
+### Option B — ComfyUI Manager → Install via Git URL
 
-If installing directly from GitHub (`git clone` into `ComfyUI\custom_nodes\` or **ComfyUI Manager → Install via Git URL**, which requires `allow_git_url_install = True` in `user\__manager\config.ini`), the bundled Windows XPU runtimes are included in the repository and installed automatically by `install.py` on restart.
+1. Set `allow_git_url_install = True` in `<ComfyUI>\user\__manager\config.ini`.
+2. In **ComfyUI Manager**, click **Install via Git URL** and paste:
+   ```text
+   https://github.com/wildersa/ComfyUI-Intel-Arc-XPU.git
+   ```
+3. Restart ComfyUI — the repository includes the bundled `.whl` files and ComfyUI Manager runs `install.py` automatically.
+
+### Option C — ComfyUI Manager Registry *(+ PowerShell binary step)*
+
+Per **Comfy Registry security standards**, Registry packages exclude prebuilt `.whl` binaries and automated `pip` installers. Installing **`ComfyUI Intel Arc XPU (OmniXPU Windows)`** (`comfyui-intel-arc-xpu`) via the Manager Registry installs the Python adapters and **`OmniXPU Status`** diagnostic node; finish setup by running `.\install.ps1` (Option A above) so the native `.whl` runtimes are installed into your ComfyUI environment.
 
 - Remove any older `comfyui-xpu-backend` folder in `custom_nodes/` if present so patches do not conflict.
 
