@@ -7,6 +7,9 @@
 - **Windows `DynamicVRAM`** (`comfy-aimdo-xpu-runtime`) with host RAM weight staging so large models (`WAN`, `MiniMax H3`, `FLUX`, `Qwen`) run without OOM.
 - **Model adapters & `CUTE` FMHA attention routing** from `ComfyUI-OmniXPU`, plus diagnostics (`OmniXPU Status`) and clean fallbacks if ComfyUI updates.
 
+> [!NOTE]
+> **Your workflow also matters:** even with XPU and native kernels installed, a workflow must use **Intel XPU-compatible nodes, attention routes, and weights** (rather than CUDA-only custom nodes or emulated `fp8` defaults) to actually execute on these kernels. See **[Section 5 — Workflow Compatibility](#5-workflow-compatibility-using-the-xpu-kernels)** and [`WORKFLOW_COMPATIBILITY.md`](./WORKFLOW_COMPATIBILITY.md).
+
 ---
 
 ## 1. Prerequisite (Required)
