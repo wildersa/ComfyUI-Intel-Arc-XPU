@@ -110,7 +110,7 @@ DynamicVRAM support detected and enabled
 | `Native Windows XPU runtime binaries (omni_xpu_kernel) are not installed` | Installed via Registry without running the extra binary setup step (`.\install.ps1` / `install.py`). |
 | `XPU out of memory` *(without `DynamicVRAM support detected and enabled`)* | Add `--enable-dynamic-vram --reserve-vram 1` (or `2` with display) to your ComfyUI launch flags. |
 | `experimental capability-driven BMG D128 CUTE route enabled` | `OMNI_ATTN_BACKEND=cute` hit an experimental attention route; switch `OMNI_ATTN_BACKEND` back to `torch` to isolate artifacts. |
-| `Attention backend 'comfy kitchen attention' is unavailable; using PyTorch attention.` | CUDA-origin workflow; switch `ModelAttentionBackend` to `"pytorch attention"` (and bypass CUDA-only `sol-attn` sparse nodes). |
+| `Attention backend 'comfy kitchen attention' is unavailable; using PyTorch attention.` | CUDA-origin workflow; switch `ModelAttentionBackend` to `"pytorch attention"` (and bypass CUDA-only `SageAttention`/`FlashAttention` nodes). |
 | `Found comfy_kitchen backend triton: {'available': False, 'disabled': True...}` | **Expected on Windows** (not an error); XPU uses the `xpu` backend, not `triton`. |
 
 ---
@@ -120,7 +120,7 @@ DynamicVRAM support detected and enabled
 Having `torch==2.13.0+xpu`, `omni_xpu_kernel`, and `DynamicVRAM` installed is only half the setup — **your workflow also needs to hit native XPU paths** instead of emulated formats or CUDA-only custom nodes:
 
 - **Weights (`int8_convrot` vs. `fp8_scaled`):** Prefer `int8_convrot` / `int8_tensorwise` checkpoints over NVIDIA-oriented `fp8_scaled` weights when available (FP8 often falls back to FP16 emulation on Intel Arc BMG).
-- **Attention & CUDA nodes:** In workflows imported from NVIDIA setups, switch `ModelAttentionBackend` from `comfy kitchen attention` to **`pytorch attention`** and bypass CUDA-only nodes (`sol-attn`, `SageAttention`, TensorRT/Triton-only packs).
+- **Attention & CUDA nodes:** In workflows imported from NVIDIA setups, switch `ModelAttentionBackend` from `comfy kitchen attention` to **`pytorch attention`** and bypass CUDA-only nodes (`SageAttention`, TensorRT/Triton-only packs). Optional packs such as `ComfyUI-Ref2VA-VSA` (`BlockSparseAttention` / `sol-attn`), `InstantID`, and `ChatterBox` are automatically adapted to XPU when installed and safely skipped if absent.
 - **Live diagnostics ([`ComfyUI-XPU-Advisor`](https://github.com/wildersa/ComfyUI-XPU-Advisor)):** Install our companion advisor extension to get live UI alerts whenever a workflow loads emulated FP8 weights, triggers Shared GPU Memory spills, or hits CUDA-only fallbacks.
 
 See **[`WORKFLOW_COMPATIBILITY.md`](./WORKFLOW_COMPATIBILITY.md)** for the full workflow checklist and verification steps.
@@ -135,7 +135,7 @@ Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** c
 | --- | --- | --- | --- | --- |
 | **`MOSS-Image`** | `int8_convrot` + `W4A8`, `25` steps | `375.28s` cold · `50.75s` warm | `103.45s` cold · `20.01s` warm | **`29.53s`** cold (`12.7×`) · **`18.27s`** warm (`2.78×`) |
 | **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | `209.29s` cold · `179.84s` warm | **`186.08s`** cold (`2.15×`) · **`160.25s`** warm (`9.87×`) |
-| **`MiniMax H3 Ref2VA` (10s / 243f)** | `1344×768`, `4`-step Turbo *(with `comfy-aimdo-xpu#37` + `TORCH_CACHE_TRIM`)* | — *(not tested)* | — | **`490.49s`** dense · **`359.05s`** (`sol-attn`) *(vs `530.62s` pre-fix, `rel=0` VBAR)* |
+| **`MiniMax H3 Ref2VA` (10s / 243f)** | `1344×768`, `4`-step Turbo *(with `comfy-aimdo-xpu#37` + `TORCH_CACHE_TRIM`; optional `ComfyUI-Ref2VA-VSA` for `sol-attn`)* | — *(not tested)* | — | **`490.49s`** dense · **`359.05s`** (`sol-attn`) *(vs `530.62s` pre-fix, `rel=0` VBAR)* |
 | **`Qwen Image 2.1 T2I`** | `int8_convrot`, `1024×1024`, `25` steps | — *(not tested)* | `22.48s` cold · `12.58s` warm | **`21.51s`** cold · **`11.38s`** warm |
 | **`Z-Image Turbo`** | `bf16`, `1024×1024`, `8` steps | — *(not tested)* | — | **`33.41s`** cold · **`5.19s`–`5.27s`** warm |
 | **`WAN 2.2 T2V 14B` (4-step LightX2V)** | `fp8_scaled` + `lightx2v` LoRA, `4` steps (`2+2`), `cfg=1.0` | — *(not tested)* | `104.37s` cold | **`93.09s`** cold · **`82.62s`** warm |

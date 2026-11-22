@@ -20,7 +20,8 @@ Many workflows shared online are built for NVIDIA CUDA setups. When loaded uncha
   - Workflows saved on CUDA often select `comfy kitchen attention`, which targets CUDA/Triton attention kernels.
   - Switch `ModelAttentionBackend` to **`pytorch attention`** so ComfyUI routes through PyTorch XPU SDPA or `OMNI_ATTN_BACKEND=cute` (CUTLASS-SYCL FMHA on Battlemage) when supported.
 - **Bypass CUDA-specific attention / custom nodes:**
-  - Nodes or patches targeting CUDA-only libraries (`sol-attn`, `SageAttention`, `FlashAttention`, `Triton`-only kernels, `RTXVideoSuperResolution`, or NVIDIA TensorRT/VFX packs) cannot run natively on Windows XPU. Bypass or replace them with ComfyUI core equivalents.
+  - Nodes or patches targeting CUDA-only libraries (`SageAttention`, `FlashAttention`, `Triton`-only kernels, `RTXVideoSuperResolution`, or NVIDIA TensorRT/VFX packs) cannot run natively on Windows XPU. Bypass or replace them with ComfyUI core equivalents.
+  - Optional third-party XPU-adapted nodes (such as `ComfyUI-Ref2VA-VSA` `BlockSparseAttention` / `sol-attn`, `InstantID`, `ChatterBox`, and `DenoTiled`) are automatically routed to XPU/`comfy-kitchen` when installed, and safely skipped if you do not use them.
 - **Check `device` dropdowns in third-party nodes:**
   - Avoid hardcoded `"cuda"` strings inside custom nodes when `"default"` / `"auto"` or ComfyUI native loaders (`comfy.model_management`) are available.
 
@@ -28,7 +29,7 @@ Many workflows shared online are built for NVIDIA CUDA setups. When loaded uncha
 
 ## 3. Keep Memory Inside VRAM (`DynamicVRAM` & Sampling Cost)
 
-- **Always launch with `--enable-dynamic-vram --reserve-vram 4`** (or `--reserve-vram 2` on lighter setups) for large image and 14B video graphs.
+- **Always launch with `--enable-dynamic-vram --reserve-vram 1` (compute-only GPU) or `--reserve-vram 2` (display GPU)** on Windows so WDDM retains headroom below physical capacity for large image and video graphs.
 - **Avoid `CFG > 1.0` when a distilled `CFG = 1.0` LoRA fits your quality target:** Running classifier-free guidance (`cfg > 1.0`) processes positive and negative batches together (`batch=2`), roughly doubling attention and compute cost per step.
 - **Keep prompt-enhancer LLMs outside the ComfyUI loop when latency matters:** Running large chat/VLM token-generation loops inside ComfyUI (`TextGenerate`) adds Python per-token overhead and JIT warmup per prompt length.
 

@@ -652,6 +652,6 @@ if ($currentAttn -ne "cute") {
 
 Write-Host ""
 Write-Host "=== Next Steps ===" -ForegroundColor Cyan
-Write-Host "1. Ensure ComfyUI launches with: --enable-dynamic-vram --reserve-vram 4"
+Write-Host "1. Ensure ComfyUI launches with: --enable-dynamic-vram --reserve-vram 1 (or 2 with display)"
 Write-Host "2. Restart Comfy Desktop / ComfyUI so new environment variables and prestartup hooks load."
 Write-Host "3. Use the 'OmniXPU Status' node in a workflow (or check comfyui.log) to verify XPU runtime providers."

@@ -99,7 +99,7 @@ try:
                 "detail": (
                     "Native Windows XPU binaries (omni_xpu_kernel) are missing from this Python "
                     "environment. Finish setup from https://github.com/wildersa/ComfyUI-Intel-Arc-XPU "
-                    "(run install.ps1 or install.py) and launch with --enable-dynamic-vram --reserve-vram 4."
+                    "(run install.ps1 or install.py) and launch with --enable-dynamic-vram --reserve-vram 1 (or 2 with display)."
                 ),
             }
             log.warning(
@@ -107,7 +107,7 @@ try:
                 "in this Python environment yet. If you installed via Comfy Registry, finish the extra "
                 "binary setup step from https://github.com/wildersa/ComfyUI-Intel-Arc-XPU (install.ps1 / "
                 "install.py on Python 3.13 + torch==2.13.0+xpu) and launch ComfyUI with "
-                "--enable-dynamic-vram --reserve-vram 4."
+                "--enable-dynamic-vram --reserve-vram 1 (or 2 with display)."
             )
         elif not _is_dynamic_vram_enabled():
             _SETUP_NOTICE = {
@@ -116,7 +116,7 @@ try:
                 "summary": "ComfyUI-Intel-Arc-XPU: DynamicVRAM Flag Recommended",
                 "detail": (
                     "XPU compute kernels are active, but --enable-dynamic-vram is not set. "
-                    "Add --enable-dynamic-vram --reserve-vram 4 to prevent XPU OOM on heavy/video workflows."
+                    "Add --enable-dynamic-vram --reserve-vram 1 (or 2 with display) to prevent XPU OOM on heavy/video workflows."
                 ),
             }
 
