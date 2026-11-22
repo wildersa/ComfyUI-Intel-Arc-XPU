@@ -11,10 +11,20 @@ from numbers import Real
 
 log = logging.getLogger("ComfyUI-OmniXPU")
 
+try:
+    from ..config import config as _config
+except ImportError:
+    try:
+        from config import config as _config
+    except ImportError:
+        _config = None
+
 _PATCH_MARKER = "__omnixpu_lora_memory_original__"
 _ATTACHMENT_KEY = "omnixpu_lora_memory_budget_v1"
 _ATTACHMENT_VERSION = 1
 _ALIGNMENT = 1024
+_DEFAULT_MIN_PEAK_MULTIPLIER = 8
+_MIN_PEAK_FLOOR_BYTES = 64 * 1024 * 1024
 _runtime_peak = 0
 
 
@@ -120,12 +130,12 @@ def _get_attachment(patcher):
     return None
 
 
-def _get_budget_entries(patcher):
+def _get_budget_metadata(patcher):
     attachment = _get_attachment(patcher)
     if not isinstance(attachment, dict):
-        return {}
+        return {}, 0
     if attachment.get("version") != _ATTACHMENT_VERSION:
-        return {}
+        return {}, 0
 
     entries = {}
     for entry in attachment.get("entries", ()):
@@ -134,10 +144,19 @@ def _get_budget_entries(patcher):
             entries[int(identity)] = (int(payload), int(staging))
         except (TypeError, ValueError):
             continue
+    try:
+        peak = max(0, int(attachment.get("peak", 0)))
+    except (TypeError, ValueError):
+        peak = 0
+    return entries, peak
+
+
+def _get_budget_entries(patcher):
+    entries, _ = _get_budget_metadata(patcher)
     return entries
 
 
-def _set_budget_entries(patcher, entries):
+def _set_budget_entries(patcher, entries, peak=0):
     if patcher is None or not entries:
         return
 
@@ -150,6 +169,7 @@ def _set_budget_entries(patcher, entries):
         ),
         "payload": stats["payload"],
         "staging": stats["staging"],
+        "peak": max(0, int(peak)),
         "tensor_count": stats["tensors"],
     }
     setter = getattr(patcher, "set_attachments", None)
@@ -172,11 +192,12 @@ def _cache_patcher_budget(before_patcher, after_patcher, before_entries):
         for identity, size in after_entries.items()
         if identity not in before_entries
     }
-    budget_entries = _get_budget_entries(after_patcher)
+    budget_entries, prev_peak = _get_budget_metadata(after_patcher)
     if not budget_entries:
-        budget_entries = _get_budget_entries(before_patcher)
+        budget_entries, prev_peak = _get_budget_metadata(before_patcher)
     budget_entries.update(added_entries)
-    _set_budget_entries(after_patcher, budget_entries)
+    patcher_peak = max(prev_peak, _patcher_stats(after_patcher)["peak"])
+    _set_budget_entries(after_patcher, budget_entries, peak=patcher_peak)
     return _entries_stats(added_entries), _entries_stats(budget_entries)
 
 
@@ -208,11 +229,63 @@ def _models_budget_entries(models):
     return entries
 
 
+def _models_budget_summary(models):
+    entries = {}
+    peak_bytes = 0
+    patchers = list(_iter_model_patchers(models))
+    for patcher in patchers:
+        patcher_entries, cached_peak = _get_budget_metadata(patcher)
+        if not patcher_entries:
+            continue
+        for identity, size in patcher_entries.items():
+            current = entries.get(identity)
+            if current is None or size[1] > current[1]:
+                entries[identity] = size
+        if cached_peak <= 0:
+            cached_peak = _patcher_stats(patcher)["peak"]
+        peak_bytes = max(peak_bytes, cached_peak)
+    all_dynamic = bool(patchers) and all(
+        callable(getattr(patcher, "is_dynamic", None)) and patcher.is_dynamic()
+        for patcher in patchers
+    )
+    return _entries_stats(entries), peak_bytes, all_dynamic
+
+
+def _lora_min_peak_enabled():
+    env_val = os.environ.get("OMNIXPU_LORA_MIN_BUDGET_PEAK")
+    if env_val is not None:
+        return os.environ.get("OMNIXPU_ENABLE", "1") != "0" and env_val != "0"
+    if _config is not None:
+        return bool(getattr(_config, "lora_min_budget_peak", True))
+    return True
+
+
+def _min_peak_multiplier():
+    raw = os.environ.get("OMNIXPU_LORA_MIN_PEAK_MULTIPLIER")
+    if raw is None:
+        return _DEFAULT_MIN_PEAK_MULTIPLIER
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _DEFAULT_MIN_PEAK_MULTIPLIER
+
+
+def _minimum_lora_budget(full_budget, peak_bytes, all_dynamic):
+    if full_budget <= 0 or not all_dynamic or not _lora_min_peak_enabled():
+        return full_budget
+    if peak_bytes <= 0:
+        return full_budget
+    floor = min(full_budget, _MIN_PEAK_FLOOR_BYTES)
+    return min(full_budget, max(peak_bytes * _min_peak_multiplier(), floor))
+
+
 def _is_memory_size(value):
     return isinstance(value, Real) and not isinstance(value, bool)
 
 
-def _add_budget_to_load_args(args, kwargs, budget):
+def _add_budget_to_load_args(args, kwargs, budget, min_budget=None):
+    if min_budget is None:
+        min_budget = budget
     new_args = list(args)
     new_kwargs = dict(kwargs)
 
@@ -232,12 +305,12 @@ def _add_budget_to_load_args(args, kwargs, budget):
     if "minimum_memory_required" in new_kwargs:
         minimum = new_kwargs["minimum_memory_required"]
         if _is_memory_size(minimum):
-            effective_minimum = minimum + budget
+            effective_minimum = minimum + min_budget
             new_kwargs["minimum_memory_required"] = effective_minimum
     elif len(new_args) > 2:
         minimum = new_args[2]
         if _is_memory_size(minimum):
-            effective_minimum = minimum + budget
+            effective_minimum = minimum + min_budget
             new_args[2] = effective_minimum
 
     return (
@@ -374,11 +447,12 @@ def _patch_model_loader(model_management):
 
     @functools.wraps(original)
     def budgeted(models, *args, **kwargs):
-        budget_stats = _entries_stats(_models_budget_entries(models))
+        budget_stats, peak_bytes, all_dynamic = _models_budget_summary(models)
         budget = budget_stats["staging"]
         if budget == 0:
             return original(models, *args, **kwargs)
 
+        min_budget = _minimum_lora_budget(budget, peak_bytes, all_dynamic)
         (
             load_args,
             load_kwargs,
@@ -386,13 +460,18 @@ def _patch_model_loader(model_management):
             effective_requested,
             minimum,
             effective_minimum,
-        ) = _add_budget_to_load_args(args, kwargs, budget)
+        ) = _add_budget_to_load_args(
+            args, kwargs, budget, min_budget=min_budget
+        )
         before = _xpu_snapshot()
         log.info(
             "[OmniXPU] LoRA model budget applied: cached=%.1fMiB/%d tensors "
+            "min_budget=%.1fMiB(peak=%.1fMiB) "
             "requested=%.1f->%.1fMiB minimum=%s %s",
             _mib(budget),
             budget_stats["tensors"],
+            _mib(min_budget),
+            _mib(peak_bytes),
             _mib(requested),
             _mib(effective_requested),
             _minimum_budget_text(minimum, effective_minimum),

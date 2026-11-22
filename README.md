@@ -67,12 +67,13 @@ After installing, configure these two Windows settings for full performance:
 Add these launch arguments to your ComfyUI startup command or **Comfy Desktop → Settings → Launch Arguments (`launchArgs`)**:
 
 ```text
---enable-dynamic-vram --reserve-vram 4
+--enable-dynamic-vram --reserve-vram 1   # secondary/compute-only Intel GPU (no monitor)
+--enable-dynamic-vram --reserve-vram 2   # primary Intel GPU also driving a Windows display
 ```
 
-**What works with vs. without `--enable-dynamic-vram --reserve-vram 4`:**
+**What works with vs. without `--enable-dynamic-vram --reserve-vram`:**
 - **Without `--enable-dynamic-vram`:** Compute acceleration still works — native Intel XPU kernels (`omni_xpu_kernel`), `comfy-kitchen`'s `xpu` backend (INT8, ConvRot, FP8, W4A8), and model adapters still accelerate workflows that fit inside VRAM.
-- **With `--enable-dynamic-vram --reserve-vram 4`:** Unlocks **Windows `DynamicVRAM`** (`comfy-aimdo` XPU overlay) and host RAM weight staging, preventing `XPU out of memory` on large/video workflows (`WAN_Animate2`, `MiniMax H3`).
+- **With `--enable-dynamic-vram --reserve-vram <1|2>`:** Unlocks **Windows `DynamicVRAM`** (`comfy-aimdo` XPU overlay), host RAM weight staging, Flash/CUTE budget calibration, and reactive PyTorch cache trimming so large `~20 GB` video models (`MiniMax H3`, `WAN 2.2`) stay resident without OOM. Avoid omitting `--reserve-vram` on Windows so WDDM always keeps safety headroom below physical capacity.
 
 ### 2. Attention Backend (`OMNI_ATTN_BACKEND`)
 
@@ -107,7 +108,7 @@ DynamicVRAM support detected and enabled
 | --- | --- |
 | `[OmniXPU] CONFLICT: ... requires ... torch==2.13.0+xpu` | Incompatible Python/PyTorch build; install `torch==2.13.0+xpu` on Python `3.13`. |
 | `Native Windows XPU runtime binaries (omni_xpu_kernel) are not installed` | Installed via Registry without running the extra binary setup step (`.\install.ps1` / `install.py`). |
-| `XPU out of memory` *(without `DynamicVRAM support detected and enabled`)* | Add `--enable-dynamic-vram --reserve-vram 4` to your ComfyUI launch flags. |
+| `XPU out of memory` *(without `DynamicVRAM support detected and enabled`)* | Add `--enable-dynamic-vram --reserve-vram 1` (or `2` with display) to your ComfyUI launch flags. |
 | `experimental capability-driven BMG D128 CUTE route enabled` | `OMNI_ATTN_BACKEND=cute` hit an experimental attention route; switch `OMNI_ATTN_BACKEND` back to `torch` to isolate artifacts. |
 | `Attention backend 'comfy kitchen attention' is unavailable; using PyTorch attention.` | CUDA-origin workflow; switch `ModelAttentionBackend` to `"pytorch attention"` (and bypass CUDA-only `sol-attn` sparse nodes). |
 | `Found comfy_kitchen backend triton: {'available': False, 'disabled': True...}` | **Expected on Windows** (not an error); XPU uses the `xpu` backend, not `triton`. |
@@ -134,6 +135,7 @@ Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** c
 | --- | --- | --- | --- | --- |
 | **`MOSS-Image`** | `int8_convrot` + `W4A8`, `25` steps | `375.28s` cold · `50.75s` warm | `103.45s` cold · `20.01s` warm | **`29.53s`** cold (`12.7×`) · **`18.27s`** warm (`2.78×`) |
 | **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | `209.29s` cold · `179.84s` warm | **`186.08s`** cold (`2.15×`) · **`160.25s`** warm (`9.87×`) |
+| **`MiniMax H3 Ref2VA` (10s / 243f)** | `1344×768`, `4`-step Turbo *(with `comfy-aimdo-xpu#37` + `TORCH_CACHE_TRIM`)* | — *(not tested)* | — | **`490.49s`** dense · **`359.05s`** (`sol-attn`) *(vs `530.62s` pre-fix, `rel=0` VBAR)* |
 | **`Qwen Image 2.1 T2I`** | `int8_convrot`, `1024×1024`, `25` steps | — *(not tested)* | `22.48s` cold · `12.58s` warm | **`21.51s`** cold · **`11.38s`** warm |
 | **`Z-Image Turbo`** | `bf16`, `1024×1024`, `8` steps | — *(not tested)* | — | **`33.41s`** cold · **`5.19s`–`5.27s`** warm |
 | **`WAN 2.2 T2V 14B` (4-step LightX2V)** | `fp8_scaled` + `lightx2v` LoRA, `4` steps (`2+2`), `cfg=1.0` | — *(not tested)* | `104.37s` cold | **`93.09s`** cold · **`82.62s`** warm |
@@ -156,6 +158,7 @@ Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** c
 | --- | --- | --- |
 | `OMNI_ATTN_BACKEND` | `torch` | `torch` (PyTorch SDPA), `cute` (CUTLASS-SYCL FMHA), `auto`, or `esimd`. |
 | `OMNIXPU_PROVIDER_BOOTSTRAP` | `auto` | Provider routing mode: `auto`, `off`, or `required`. |
+| `OMNIXPU_DYNAMIC_VRAM_TORCH_CACHE_TRIM` | `1` | Rate-limited `torch.xpu.empty_cache()` during `vbar_fault` pressure (`0` disables). |
 | `OMNIXPU_XPU_MEMORY_FRACTION` | `0.99` | Caching-allocator fraction applied on prestartup (`0` / `off` disables). |
 | `OMNIXPU_ENABLE` | `1` | Set to `0` to disable all OmniXPU providers and patches. |
 | `OMNIXPU_DEBUG` / `OMNIXPU_DEBUG_VERBOSE` | `0` | Set to `1` for kernel or dispatch tracing. |

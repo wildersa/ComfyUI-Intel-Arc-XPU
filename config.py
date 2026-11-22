@@ -32,6 +32,10 @@ class Config:
         self.lora_memory = (
             master and os.environ.get("OMNIXPU_LORA_MEMORY", "1") != "0"
         )
+        self.lora_min_budget_peak = (
+            self.lora_memory
+            and os.environ.get("OMNIXPU_LORA_MIN_BUDGET_PEAK", "1") != "0"
+        )
         self.writable_weights = master
         self.qwen_image21_cache = (
             master and os.environ.get("OMNIXPU_QWEN_IMAGE21_CACHE", "1") != "0"
@@ -59,6 +63,22 @@ class Config:
             self.dynamic_vram_boundary_trim
             and os.environ.get("OMNIXPU_DYNAMIC_VRAM_FIT_TRIM", "1") != "0"
         )
+        self.dynamic_vram_budget_calibration = (
+            self.dynamic_vram_boundary_trim
+            and os.environ.get("OMNIXPU_DYNAMIC_VRAM_BUDGET_CALIBRATION", "1") != "0"
+        )
+        self.dynamic_vram_telemetry = (
+            self.dynamic_vram_boundary_trim
+            and os.environ.get("OMNIXPU_DYNAMIC_VRAM_TELEMETRY", "1") != "0"
+        )
+        self.dynamic_vram_step_trace = (
+            self.dynamic_vram_boundary_trim
+            and os.environ.get("OMNIXPU_DYNAMIC_VRAM_STEP_TRACE", "0") == "1"
+        )
+        self.dynamic_vram_torch_cache_trim = (
+            self.dynamic_vram_boundary_trim
+            and os.environ.get("OMNIXPU_DYNAMIC_VRAM_TORCH_CACHE_TRIM", "1") != "0"
+        )
         self.xpu_ram_staging = (
             master and os.environ.get("OMNIXPU_XPU_RAM_STAGING", "1") != "0"
         )
@@ -71,6 +91,9 @@ class Config:
         )
         self.median_fix = (
             master and os.environ.get("OMNIXPU_MEDIAN_FIX", "0") != "0"
+        )
+        self.custom_nodes_xpu = (
+            master and os.environ.get("OMNIXPU_CUSTOM_NODES_XPU", "1") != "0"
         )
 
 

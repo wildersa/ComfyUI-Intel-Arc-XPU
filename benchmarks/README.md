@@ -12,8 +12,10 @@ Measured on **Windows 11 (`Intel Arc Pro B70`, `xpu:0`, `torch==2.13.0+xpu`)**.
 | **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | `209.29s` cold · `179.84s` warm | **`186.08s`** cold · **`160.25s`** warm | **`2.15×` cold · `9.87×` warm** (`cute`) |
 | **`Qwen Image 2.1 T2I`** | `int8_convrot`, `1024×1024`, `25` steps | — *(not tested)* | `22.48s` cold · `12.58s` warm | **`21.51s`** cold · **`11.38s`** warm | `1.05×` cold · `1.11×` warm (`cute` vs `torch`) |
 | **`Z-Image Turbo`** | `bf16`, `1024×1024`, `8` steps | — *(not tested)* | — | **`33.41s`** cold · **`5.19s`–`5.27s`** warm | — *(reference, `1.71–1.72 it/s`)* |
-| **`WAN 2.2 T2V 14B`** | `fp8_scaled`, `2` steps (Turbo) | — *(not tested)* | `104.37s` cold | **`93.09s`** cold · **`82.62s`** warm | `1.12×` cold (`cute` vs `torch`) |
+| **`WAN 2.2 T2V 14B` (4-step LightX2V)** | `fp8_scaled` + `lightx2v` LoRA, `4` steps (`2+2`), `cfg=1.0` | — *(not tested)* | `104.37s` cold | **`93.09s`** cold · **`82.62s`** warm | `1.12×` cold (`cute` vs `torch`) |
+| **`WAN 2.2 T2V 14B` (Standard 20-step)** | `fp8_scaled`, `20` steps (`10+10`), `cfg=3.5` *(template default, LoRA bypassed)* | — *(not tested)* | `777.00s` | **`685.00s`–`696.00s`** | `1.12×–1.13×` (`cute` vs `torch`) |
 | **`MiniMax H3 Ref2VA` (8-step)** | `8`-step Turbo, `960×544`, `8s` + audio | — *(not tested)* | `293.36s` (`fp8_scaled`) · `86.31s` (`int8_convrot` warm) | **`97.27s`** cold · **`70.85s`** warm (`int8_convrot`) | — *(reference, `0.00 ms` AV drift)* |
+| **`MiniMax H3 Ref2VA` (10s / 243f)** | `4`-step Turbo, `1344×768` (`int8_convrot`), `aimdo-xpu#37` + cache trim | — *(not tested)* | — | **`490.49s`** dense · **`359.05s`** (`sol-attn`) | **`-7.6%`** dense · **`-32.3%`** (`sol-attn`, vs `530.62s` pre-fix baseline; `rel=0` VBAR) |
 
 <sub>**`cold`** = first run (loading models from disk + XPU/kernel warmup) · **`warm` (hot)** = subsequent runs with models/caches already loaded.</sub>
 
@@ -64,5 +66,7 @@ All three PNGs below embed the full ComfyUI `prompt` and `workflow` metadata (`z
 ## Notes
 
 - Stock ComfyUI (OOTB) baselines (`MOSS-Image` and `MiniMax H3 Ref2VA` 20-step) and extension runs share the same `torch==2.13.0+xpu` build on Windows 11 (`Intel Arc Pro B70`).
+- ComfyUI's built-in `video_wan2_2_14B_t2v` template opens with the 4-step `lightx2v` LoRA subgraph in **Bypass** by default (`20` steps `10+10`, `cfg=3.5`). Un-bypassing the 4-step LoRA group and setting `cfg=1.0` (`4` steps `2+2`) activates the fast `WAN 2.2 T2V 14B (4-step LightX2V)` path.
 - Rows marked `— (not tested)` have no `torch==2.13.0+xpu` stock baseline yet and reflect `torch` vs. `cute` extension runs or reference timings.
+- The `MiniMax H3 Ref2VA (10s / 243f)` full-residency row (`20,000 MiB` resident VBAR, `rel=0` evictions after step 1/2) combines `ComfyUI-Intel-Arc-XPU`'s Flash/CUTE budget calibration, LoRA peak budget, and reactive `OMNIXPU_DYNAMIC_VRAM_TORCH_CACHE_TRIM=1` (`0.1%–0.7%` warm delta across `moss`, `h3_8s`, `qwen21`, `wan22_turbo` with `--reserve-vram 1`) with the `1×` UR/Level Zero accounting fix submitted upstream in [`xiangyuT/comfy-aimdo-xpu#37`](https://github.com/xiangyuT/comfy-aimdo-xpu/pull/37) (the bundled `0.6.0` runtime wheel still predates that upstream merge).
 - No host-specific paths, LUIDs, usernames, or credentials are stored in this directory.

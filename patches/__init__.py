@@ -176,6 +176,13 @@ COMPONENTS = (
         "upstream_pending",
         "fixes/legacy_median.py",
     ),
+    Component(
+        "custom_nodes_xpu_adapter",
+        "custom_nodes_xpu",
+        "adapter",
+        "ComfyUI-OmniXPU",
+        "adapters/custom_nodes_xpu.py",
+    ),
 )
 
 
