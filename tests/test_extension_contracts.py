@@ -121,6 +121,9 @@ class ExtensionContractTests(unittest.TestCase):
             self.assertNotIn("--reserve-vram 4", txt, f"stale --reserve-vram 4 found in {rel}")
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         compat = (REPO_ROOT / "WORKFLOW_COMPATIBILITY.md").read_text(encoding="utf-8")
+        pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn("MANDATORY:", pyproject)
+        self.assertIn("https://github.com/wildersa/ComfyUI-Intel-Arc-XPU", pyproject)
         self.assertNotIn("CUDA-only `sol-attn`", readme)
         self.assertNotIn("(`sol-attn`", compat)
 

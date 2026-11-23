@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-intel-arc-xpu"
-description = "Native Intel Arc Battlemage (B70 / XPU) acceleration for ComfyUI on Windows (ComfyUI-OmniXPU adapters and diagnostics). Comfy Registry installs require one extra setup step for native XPU binaries plus --enable-dynamic-vram --reserve-vram 1 (or 2 with display); see README. Benchmarks in the repository."
-version = "0.2.5"
+description = "MANDATORY: Read the full README at https://github.com/wildersa/ComfyUI-Intel-Arc-XPU before using. Installing via Comfy Registry alone is incomplete — this extension only works properly with Python 3.13 + torch==2.13.0+xpu, the extra native Windows XPU wheel setup step (.\\install.ps1 / install.py), and --enable-dynamic-vram --reserve-vram 1 (or 2 with display)."
+version = "0.2.6"
 requires-python = ">=3.13,<3.14"
 license = { file = "LICENSE" }
 dependencies = []

@@ -2,6 +2,12 @@
 
 All notable changes to **ComfyUI-Intel-Arc-XPU** are documented in this file.
 
+## [0.2.6] - 2026-11-22
+
+### Changed
+- Updated `[project].description` in `pyproject.toml` so the Comfy Registry listing keeps the **`MANDATORY:`** warning up front (pointing users to the README, Python `3.13` + `torch==2.13.0+xpu`, native XPU wheel installation, and `--enable-dynamic-vram --reserve-vram 1` / `2`).
+- Added a contract assertion in `tests/test_extension_contracts.py` ensuring `pyproject.toml` retains the mandatory setup notice.
+
 ## [0.2.5] - 2026-11-22
 
 ### Added
