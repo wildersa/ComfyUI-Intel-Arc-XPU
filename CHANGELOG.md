@@ -2,6 +2,13 @@
 
 All notable changes to **ComfyUI-Intel-Arc-XPU** are documented in this file.
 
+## [0.2.9] - 2026-11-27
+
+Faster and more stable LTX-2.5 video generation on Intel Arc (XPU): speeds up LTX-2.5 video decoding (~4s faster on 1280x704 5s clips) and improves automatic VRAM cleanup between decode tiles to prevent stalls across 8 GB to 32 GB Intel Arc GPUs. Also added LTX-2.5 and updated MiniMax H3 10s benchmarks to the README. Updating from v0.2.x only requires updating this node and restarting ComfyUI.
+
+### Changed
+- Republishes `v0.2.8` on Comfy Registry as `v0.2.9` with concise plain-text Updates notes (Comfy Registry does not allow reusing a deleted version number).
+
 ## [0.2.8] - 2026-11-27
 
 Faster and more stable LTX-2.5 video generation on Intel Arc (XPU): speeds up LTX-2.5 video decoding (~4s faster on 1280x704 5s clips) and improves automatic VRAM cleanup between decode tiles to prevent stalls across 8 GB to 32 GB Intel Arc GPUs. Also added LTX-2.5 and updated MiniMax H3 10s benchmarks to the README. Updating from v0.2.x only requires updating this node and restarting ComfyUI.
