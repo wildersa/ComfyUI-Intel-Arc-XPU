@@ -16,13 +16,24 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Extract changelog for current version
+      - name: Extract plain-text summary for current version
         shell: bash
         run: |
           python3 - <<'PY'
           import os
           import re
           from pathlib import Path
+
+          CHANGELOG_URL = "https://github.com/wildersa/ComfyUI-Intel-Arc-XPU/blob/main/CHANGELOG.md"
+
+          def strip_markdown(raw: str) -> str:
+              s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", raw)
+              s = re.sub(r"`([^`]+)`", r"\1", s)
+              s = re.sub(r"\*\*([^*]+)\*\*", r"\1", s)
+              s = re.sub(r"__([^_]+)__", r"\1", s)
+              s = re.sub(r"(?m)^\s*#{1,6}\s+", "", s)
+              s = re.sub(r"(?m)^\s*[-*]\s+", "", s)
+              return re.sub(r"\s+", " ", s).strip()
 
           pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
           ver_match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', pyproject)
@@ -34,14 +45,24 @@ jobs:
               pattern = rf"(?ms)^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)"
               match = re.search(pattern, text)
               if match:
-                  notes = match.group(1).strip()
+                  section = match.group(1).strip()
+                  # Prefer the plain-text lead summary before the first "### " heading.
+                  lead = re.split(r"(?m)^###\s+", section, maxsplit=1)[0].strip()
+                  if lead:
+                      notes = strip_markdown(lead)
+                  else:
+                      plain = strip_markdown(section)
+                      notes = plain[:380].rsplit(" ", 1)[0] + "..." if len(plain) > 380 else plain
+                  if notes and CHANGELOG_URL not in notes:
+                      notes = f"{notes} Full technical details: {CHANGELOG_URL}"
           if notes:
               delimiter = "__COMFY_CHANGELOG_EOF__"
               while delimiter in notes:
                   delimiter += "_X"
               with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
                   fh.write(f"COMFY_NODE_CHANGELOG<<{delimiter}\n{notes}\n{delimiter}\n")
-              print(f"Loaded COMFY_NODE_CHANGELOG for v{version} ({len(notes)} chars)")
+              print(f"Loaded plain-text COMFY_NODE_CHANGELOG for v{version} ({len(notes)} chars):")
+              print(notes)
           else:
               print(f"No CHANGELOG.md section found for v{version!r}; publishing without Updates notes")
           PY

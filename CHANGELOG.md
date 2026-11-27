@@ -4,6 +4,8 @@ All notable changes to **ComfyUI-Intel-Arc-XPU** are documented in this file.
 
 ## [0.2.8] - 2026-11-27
 
+Faster and more stable LTX-2.5 video generation on Intel Arc (XPU): speeds up LTX-2.5 video decoding (~4s faster on 1280x704 5s clips) and improves automatic VRAM cleanup between decode tiles to prevent stalls across 8 GB to 32 GB Intel Arc GPUs. Also added LTX-2.5 and updated MiniMax H3 10s benchmarks to the README. Updating from v0.2.x only requires updating this node and restarting ComfyUI.
+
 ### Added
 - **Batched XPU eager `na3d` adapter (`adapters/na3d_eager.py`, `config.py`, `patches/__init__.py`):** batches neighborhood-3D attention groups on Intel XPU instead of falling back to `g_max=1` (`g_max=4` on `>=16 GB` GPUs, `g_max=2` on `<16 GB`, controlled via `OMNIXPU_NA3D_EAGER=1` and `OMNIXPU_NA3D_EAGER_GMAX`), with automatic OOM fallback to stock `na3d` and exact numerical parity (`max_err=0.0`). Saves `~4.1s` on LTX-2.5 `1280×704` `CausalDiffusionVAE` decode (`69.04s → 67.26s` warm).
 - **Observed non-dynamic peak tracking & inter-tile VRAM reclaim (`adapters/dynamic_vram.py`, `config.py`):** tracks observed `torch.xpu.memory_reserved` peaks for non-dynamic models (`_OBSERVED_NON_DYNAMIC_PEAKS`, 64-entry LRU without calling `reset_peak_memory_stats`) and adds an inter-tile safety valve on `comfy.utils.tiled_scale_multidim` (`OMNIXPU_DYNAMIC_VRAM_INTER_TILE_RECLAIM=1`, multi-SKU safety floor `max(512 MiB, min(3072 MiB, 12% * total_vram))`) to flush PyTorch cache and reclaim inactive DynamicVRAM VBAR cleanly outside C/UR allocator locks during tiled VAE decodes.
