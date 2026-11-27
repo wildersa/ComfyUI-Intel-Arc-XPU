@@ -2,6 +2,19 @@
 
 All notable changes to **ComfyUI-Intel-Arc-XPU** are documented in this file.
 
+## [0.2.8] - 2026-11-27
+
+### Added
+- **Batched XPU eager `na3d` adapter (`adapters/na3d_eager.py`, `config.py`, `patches/__init__.py`):** batches neighborhood-3D attention groups on Intel XPU instead of falling back to `g_max=1` (`g_max=4` on `>=16 GB` GPUs, `g_max=2` on `<16 GB`, controlled via `OMNIXPU_NA3D_EAGER=1` and `OMNIXPU_NA3D_EAGER_GMAX`), with automatic OOM fallback to stock `na3d` and exact numerical parity (`max_err=0.0`). Saves `~4.1s` on LTX-2.5 `1280×704` `CausalDiffusionVAE` decode (`69.04s → 67.26s` warm).
+- **Observed non-dynamic peak tracking & inter-tile VRAM reclaim (`adapters/dynamic_vram.py`, `config.py`):** tracks observed `torch.xpu.memory_reserved` peaks for non-dynamic models (`_OBSERVED_NON_DYNAMIC_PEAKS`, 64-entry LRU without calling `reset_peak_memory_stats`) and adds an inter-tile safety valve on `comfy.utils.tiled_scale_multidim` (`OMNIXPU_DYNAMIC_VRAM_INTER_TILE_RECLAIM=1`, multi-SKU safety floor `max(512 MiB, min(3072 MiB, 12% * total_vram))`) to flush PyTorch cache and reclaim inactive DynamicVRAM VBAR cleanly outside C/UR allocator locks during tiled VAE decodes.
+- **LTX-2.5 T2V & updated MiniMax H3 10s benchmarks (`README.md`, `benchmarks/README.md`):** added verified Windows 11 Intel Arc Pro B70 (`32 GB`) timings for `LTX-2.5 T2V` (`22B` distilled: `1280×704` `107.99s` cold / `67.26s` warm, short `26.79s` warm, high-res `175.63s` warm) and updated `MiniMax H3 Ref2VA` 10s (`342.62s` with `sol-attn`).
+- **Multi-SKU workflow VRAM protection test suite (`tests/test_workflow_vram_protection.py`):** added 7 stdlib-only end-to-end transition tests across `8 / 12 / 16 / 24 / 32 GiB` VRAM profiles.
+
+### Changed
+- Expanded CPU-only CI test suite to **30 stdlib-only tests** (`tests/test_extension_contracts.py` + `tests/test_workflow_vram_protection.py`) covering `na3d_eager`, observed non-dynamic peaks, inter-tile VRAM reclaim, and multi-SKU workflow transitions.
+- Automated Comfy Registry **Updates** (`COMFY_NODE_CHANGELOG`) extraction from `CHANGELOG.md` in `.github/workflows/publish.yml`.
+- Added the experimental hardware-validation scope notice and direct upstream build links (`intel/llm-scaler`, `xiangyuT/comfy-kitchen-xpu`, `xiangyuT/comfy-aimdo-xpu`) to `README.md`.
+
 ## [0.2.7] - 2026-11-27
 
 ### Added

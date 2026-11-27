@@ -75,11 +75,13 @@ class ExtensionContractTests(unittest.TestCase):
             self.assertTrue(cfg.dynamic_vram_torch_cache_trim)
             self.assertTrue(cfg.dynamic_vram_budget_calibration)
             self.assertTrue(cfg.dynamic_vram_non_dynamic_trim)
+            self.assertTrue(cfg.dynamic_vram_inter_tile_reclaim)
             self.assertTrue(cfg.dynamic_vram_get_free_memory)
             self.assertTrue(cfg.lora_min_budget_peak)
             self.assertTrue(cfg.custom_nodes_xpu)
             self.assertTrue(cfg.te_long_sdpa_bf16)
             self.assertTrue(cfg.h3_cute_q_chunk)
+            self.assertTrue(cfg.na3d_eager)
             self.assertFalse(cfg.dynamic_vram_step_trace)
         with mock.patch.dict(os.environ, {"OMNIXPU_DYNAMIC_VRAM_TORCH_CACHE_TRIM": "0"}, clear=True):
             cfg_off = cfg_mod.Config()
@@ -87,6 +89,11 @@ class ExtensionContractTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"OMNIXPU_DYNAMIC_VRAM_NON_DYNAMIC_TRIM": "0"}, clear=True):
             cfg_nondyn_off = cfg_mod.Config()
             self.assertFalse(cfg_nondyn_off.dynamic_vram_non_dynamic_trim)
+            self.assertFalse(cfg_nondyn_off.dynamic_vram_inter_tile_reclaim)
+        with mock.patch.dict(os.environ, {"OMNIXPU_DYNAMIC_VRAM_INTER_TILE_RECLAIM": "0"}, clear=True):
+            cfg_tile_off = cfg_mod.Config()
+            self.assertTrue(cfg_tile_off.dynamic_vram_non_dynamic_trim)
+            self.assertFalse(cfg_tile_off.dynamic_vram_inter_tile_reclaim)
         with mock.patch.dict(os.environ, {"OMNIXPU_DYNAMIC_VRAM_GET_FREE_MEMORY": "0"}, clear=True):
             cfg_free_off = cfg_mod.Config()
             self.assertFalse(cfg_free_off.dynamic_vram_get_free_memory)
@@ -96,6 +103,9 @@ class ExtensionContractTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"OMNIXPU_H3_CUTE_Q_CHUNK": "0"}, clear=True):
             cfg_h3_off = cfg_mod.Config()
             self.assertFalse(cfg_h3_off.h3_cute_q_chunk)
+        with mock.patch.dict(os.environ, {"OMNIXPU_NA3D_EAGER": "0"}, clear=True):
+            cfg_na3d_off = cfg_mod.Config()
+            self.assertFalse(cfg_na3d_off.na3d_eager)
 
     def test_custom_nodes_xpu_skips_cleanly_when_optional_packs_absent(self):
         fake_torch = _make_mock_torch(xpu_available=True, cuda_available=False)
@@ -1186,6 +1196,382 @@ class ExtensionContractTests(unittest.TestCase):
             lora_mod._patch_model_loader(mm)
             self.assertEqual(mm.load_models_gpu([patcher], memory_required=1024**3), "ok")
         self.assertEqual(seen_devices, [xpu1, xpu1])
+
+    def test_na3d_eager_gmax_sku_policy_and_overrides(self):
+        gib = 1024**3
+        fake_torch = _make_mock_torch(xpu_available=True, cuda_available=False)
+        mod = _load_repo_module("adapters.na3d_eager_sku", "adapters/na3d_eager.py", fake_torch=fake_torch)
+
+        with mock.patch.object(mod, "torch", fake_torch), mock.patch.dict(os.environ, {}, clear=True):
+            for vram_gib, expected in ((8, 2), (12, 2), (16, 4), (24, 4), (32, 4)):
+                fake_torch.xpu.get_device_properties = lambda dev, mem=vram_gib * gib: types.SimpleNamespace(
+                    total_memory=mem
+                )
+                self.assertEqual(mod._select_xpu_g_max("xpu:0"), expected, f"{vram_gib} GiB")
+
+            # Missing or failing device property query falls back safely to 2.
+            fake_torch.xpu.get_device_properties = mock.Mock(side_effect=RuntimeError("no props"))
+            self.assertEqual(mod._select_xpu_g_max("xpu:0"), 2)
+
+            # Explicit OMNIXPU_NA3D_EAGER_GMAX override (including <= 1 opt-out).
+            with mock.patch.dict(os.environ, {"OMNIXPU_NA3D_EAGER_GMAX": "6"}, clear=True):
+                self.assertEqual(mod._select_xpu_g_max("xpu:0"), 6)
+            with mock.patch.dict(os.environ, {"OMNIXPU_NA3D_EAGER_GMAX": "1"}, clear=True):
+                self.assertEqual(mod._select_xpu_g_max("xpu:0"), 1)
+            with mock.patch.dict(os.environ, {"OMNIXPU_NA3D_EAGER_GMAX": "0"}, clear=True):
+                self.assertEqual(mod._select_xpu_g_max("xpu:0"), 1)
+
+    def test_na3d_eager_apply_idempotent_passthrough_and_oom_fallback(self):
+        gib = 1024**3
+        fake_torch = _make_mock_torch(xpu_available=True, cuda_available=False)
+        fake_torch.xpu.get_device_properties = lambda dev: types.SimpleNamespace(total_memory=32 * gib)
+        fake_torch.compiler = types.SimpleNamespace(is_compiling=lambda: False)
+        fake_torch.OutOfMemoryError = type("OutOfMemoryError", (RuntimeError,), {})
+        empty_cache_calls = []
+        fake_torch.xpu.empty_cache = lambda: empty_cache_calls.append(True)
+
+        class _SliceTensor:
+            def __init__(self, shape, device_type="xpu"):
+                self.shape = shape
+                self.dtype = "bfloat16"
+                self.device = types.SimpleNamespace(type=device_type)
+                self.assigned = []
+
+            def __mul__(self, other):
+                return _SliceTensor(self.shape, self.device.type)
+
+            def __getitem__(self, item):
+                return self
+
+            def __setitem__(self, key, value):
+                self.assigned.append((key, value))
+
+            def permute(self, *dims):
+                return self
+
+            def reshape(self, *shape):
+                return self
+
+            def view(self, *shape):
+                return self
+
+        sdpa_batch_sizes = []
+        oom_mode = {"raise": False}
+
+        def _fake_sdpa(q_s, k_s, v_s, attn_mask=None, scale=1.0):
+            if oom_mode["raise"]:
+                raise RuntimeError("XPU out of memory allocating attention workspace")
+            sdpa_batch_sizes.append(q_s.shape[0])
+            return q_s
+
+        fake_torch.empty = lambda shape, device=None, dtype=None: _SliceTensor(shape, getattr(device, "type", "xpu"))
+        fake_torch.stack = lambda seq: _SliceTensor((len(seq),) + tuple(seq[0].shape), seq[0].device.type)
+        fake_torch.nn = types.SimpleNamespace(
+            functional=types.SimpleNamespace(scaled_dot_product_attention=_fake_sdpa)
+        )
+
+        orig_calls = []
+
+        def _orig_na3d(q, k, v, kernel_size, is_causal=None, scale=None):
+            orig_calls.append((q, kernel_size, is_causal, scale))
+            return ("orig", q.device.type, scale)
+
+        eager_na = types.ModuleType("comfy_kitchen.backends.eager.na")
+        eager_na.NA_KV_STACK_BUDGET = 2**28
+        eager_na.functional = fake_torch.nn.functional
+        eager_na._window_bounds = lambda length, kernel, causal: ([0] * length, [min(length, kernel)] * length)
+        eager_na._pick_tiles = lambda dims, kernels: [1, 1, 1]
+        eager_na._group_mask = lambda rel, dtype, device: types.SimpleNamespace(shape=(1, 1, 1, 1))
+        eager_na.na3d = _orig_na3d
+
+        eager_pkg = types.ModuleType("comfy_kitchen.backends.eager")
+        eager_pkg.na = eager_na
+        eager_pkg.na3d = _orig_na3d
+
+        reg_eager_pkg = types.ModuleType("comfy_kitchen_reg_eager")
+        reg_eager_pkg.na3d = _orig_na3d
+
+        ck_pkg = types.ModuleType("comfy_kitchen")
+        ck_pkg.registry = types.SimpleNamespace(_backends={"eager": reg_eager_pkg})
+        ck_backends = types.ModuleType("comfy_kitchen.backends")
+
+        mod = _load_repo_module("adapters.na3d_eager_apply", "adapters/na3d_eager.py", fake_torch=fake_torch)
+        patched_sys = {
+            "comfy_kitchen": ck_pkg,
+            "comfy_kitchen.backends": ck_backends,
+            "comfy_kitchen.backends.eager": eager_pkg,
+            "comfy_kitchen.backends.eager.na": eager_na,
+        }
+        with mock.patch.object(mod, "torch", fake_torch), mock.patch.dict(sys.modules, patched_sys):
+            ok, msg = mod.apply()
+            self.assertTrue(ok)
+            self.assertEqual(msg, "")
+            self.assertIs(eager_na.na3d, eager_pkg.na3d)
+            self.assertIs(eager_na.na3d, reg_eager_pkg.na3d)
+            self.assertTrue(hasattr(eager_na.na3d, mod._PATCH_MARKER))
+
+            # Idempotent re-apply returns already patched without double-wrapping.
+            wrapped_fn = eager_na.na3d
+            ok2, msg2 = mod.apply()
+            self.assertTrue(ok2)
+            self.assertEqual(msg2, "already patched")
+            self.assertIs(eager_na.na3d, wrapped_fn)
+
+            # Non-XPU tensor passes straight through to original na3d.
+            cpu_q = _SliceTensor((1, 2, 2, 2, 1, 4), device_type="cpu")
+            self.assertEqual(eager_pkg.na3d(cpu_q, cpu_q, cpu_q, [1, 1, 1]), ("orig", "cpu", None))
+            self.assertEqual(len(orig_calls), 1)
+
+            # XPU tensor with g_max=4 batches 8 identical tiles into two SDPA calls of batch=4.
+            xpu_q = _SliceTensor((1, 2, 2, 2, 1, 4), device_type="xpu")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                out = eager_pkg.na3d(xpu_q, xpu_q, xpu_q, [1, 1, 1], scale=0.5)
+            self.assertIsInstance(out, _SliceTensor)
+            self.assertEqual(sdpa_batch_sizes, [4, 4])
+
+            # Explicit g_max=1 delegates to original without batched SDPA.
+            sdpa_batch_sizes.clear()
+            with mock.patch.dict(os.environ, {"OMNIXPU_NA3D_EAGER_GMAX": "1"}, clear=True):
+                self.assertEqual(eager_pkg.na3d(xpu_q, xpu_q, xpu_q, [1, 1, 1]), ("orig", "xpu", None))
+            self.assertEqual(sdpa_batch_sizes, [])
+
+            # OOM in batched execution empties XPU cache and falls back cleanly to original with unscaled q.
+            oom_mode["raise"] = True
+            with mock.patch.dict(os.environ, {}, clear=True):
+                res = eager_pkg.na3d(xpu_q, xpu_q, xpu_q, [1, 1, 1], scale=0.25)
+            self.assertEqual(res, ("orig", "xpu", 0.25))
+            self.assertIs(orig_calls[-1][0], xpu_q)
+            self.assertEqual(len(empty_cache_calls), 1)
+
+    def test_dynamic_vram_observed_peak_tracking_and_sku_clamps(self):
+        gib = 1024**3
+        mib = 1024**2
+        total_32g = 32 * gib
+        reserved = 1536 * mib
+
+        class _CausalDiffusionVAE:
+            pass
+
+        class _LTXAV:
+            pass
+
+        dyn, mm, state, dev_cls, model_cls, loaded_cls = self._make_boundary_harness(
+            free_bytes=15000 * mib, total_bytes=total_32g, reserved_bytes=reserved
+        )
+        xpu0 = dev_cls("xpu", 0)
+        ltxav = model_cls("LTXAV", dynamic=True, size=25696 * mib, loaded=25696 * mib, load_device=xpu0)
+        ltxav.model = _LTXAV()
+        vae = model_cls("CausalDiffusionVAE", dynamic=False, size=1404 * mib, loaded=0, load_device=xpu0)
+        vae.model = _CausalDiffusionVAE()
+        mm.current_loaded_models = [loaded_cls(ltxav)]
+
+        xpu_metrics = {
+            "rsv": 754 * mib,
+            "alloc": 500 * mib,
+            "max_rsv": 754 * mib,
+        }
+        dyn.torch.xpu.memory_reserved = lambda dev=0: xpu_metrics["rsv"]
+        dyn.torch.xpu.memory_allocated = lambda dev=0: xpu_metrics["alloc"]
+        dyn.torch.xpu.max_memory_reserved = lambda dev=0: xpu_metrics["max_rsv"]
+        dyn.torch.xpu.memory_stats = lambda dev=0: {
+            "reserved_bytes.all.current": xpu_metrics["rsv"],
+            "active_bytes.all.current": xpu_metrics["alloc"],
+        }
+
+        def _fake_tiled_scale(samples, function, tile=(64, 64), **kwargs):
+            return [function(samples), function(samples)]
+
+        fake_utils = types.SimpleNamespace(tiled_scale_multidim=_fake_tiled_scale)
+        self.assertTrue(dyn._patch_tiled_scale_multidim(fake_utils))
+
+        # Run 1: VAE unloaded (1404 MiB), memory_required=6800 MiB (1.5x = 10200 + 1536 = 11736 MiB).
+        mm.load_models_gpu([vae], memory_required=6800 * mib, force_full_load=True)
+        expected_key = (0, "_CausalDiffusionVAE", 6784)
+        self.assertIn(0, dyn._ACTIVE_NON_DYNAMIC_CONTEXT)
+        self.assertEqual(dyn._ACTIVE_NON_DYNAMIC_CONTEXT[0]["key"], expected_key)
+
+        # Tile 1 raises reserved to 10934 MiB (captured mid-execution); free stays above 3072 MiB floor.
+        tile_idx = [0]
+
+        def _tile_fn(s):
+            tile_idx[0] += 1
+            if tile_idx[0] == 1:
+                xpu_metrics["rsv"] = 10934 * mib
+                xpu_metrics["alloc"] = 8500 * mib
+                xpu_metrics["max_rsv"] = 10934 * mib
+            else:
+                xpu_metrics["rsv"] = 9000 * mib
+                xpu_metrics["alloc"] = 7000 * mib
+            return s
+
+        fake_utils.tiled_scale_multidim(types.SimpleNamespace(device=xpu0), _tile_fn)
+        self.assertEqual(dyn._OBSERVED_NON_DYNAMIC_PEAKS[expected_key], 10934 * mib)
+
+        # Transient intra-tile spike before Run 2 starts is finalized on next boundary call (even dynamic).
+        xpu_metrics["max_rsv"] = 11200 * mib
+        xpu_metrics["rsv"] = 2000 * mib
+        xpu_metrics["alloc"] = 800 * mib
+        mm.load_models_gpu([ltxav], memory_required=8000 * mib, minimum_memory_required=2000 * mib)
+        self.assertNotIn(0, dyn._ACTIVE_NON_DYNAMIC_CONTEXT)
+        self.assertEqual(dyn._OBSERVED_NON_DYNAMIC_PEAKS[expected_key], 11200 * mib)
+
+        # Run 2: VAE mostly loaded (static_unloaded = 154 MiB), memory_required=6810 MiB (same 6784 MiB bucket).
+        # Observed peak (11200 + 1536 = 12736 MiB) raises base_target above 1.5x (11736 MiB)!
+        vae._loaded = 1250 * mib
+        ltxav.unload_calls.clear()
+        ltxav._loaded = 20000 * mib
+        state["free"] = 11500 * mib
+        reusable = xpu_metrics["rsv"] - xpu_metrics["alloc"]
+        mm.load_models_gpu([vae], memory_required=6810 * mib, force_full_load=True)
+        static_budget = (154 * mib * 11 + 9) // 10
+        expected_inactive_target = 11200 * mib + reserved + static_budget
+        expected_shortfall = expected_inactive_target - (11500 * mib + reusable)
+        self.assertEqual(ltxav.unload_calls, [expected_shortfall])
+
+        # Different memory_required bucket (3400 MiB -> 3392 MiB) uses a separate key (no inflation).
+        ltxav.unload_calls.clear()
+        state["free"] = 11500 * mib
+        mm.load_models_gpu([vae], memory_required=3400 * mib, force_full_load=True)
+        self.assertEqual(dyn._ACTIVE_NON_DYNAMIC_CONTEXT[0]["key"], (0, "_CausalDiffusionVAE", 3392))
+        self.assertEqual(ltxav.unload_calls, [])
+
+        # Multi-SKU clamp: observed_peak cannot push target past max(unscaled_base, 0.85 * total_vram) or total_vram.
+        for sku_gib in (8, 12, 16, 24, 32):
+            sku_total = sku_gib * gib
+            dyn_s, mm_s, state_s, dev_s, model_s, loaded_s = self._make_boundary_harness(
+                free_bytes=2 * gib, total_bytes=sku_total, reserved_bytes=1 * gib
+            )
+            big_dyn = model_s("BigDyn", dynamic=True, size=sku_total, loaded=sku_total)
+            vae_s = model_s("VAE", dynamic=False, size=512 * mib, loaded=512 * mib)
+            vae_s.model = _CausalDiffusionVAE()
+            mm_s.current_loaded_models = [loaded_s(big_dyn)]
+            sku_key = (0, "_CausalDiffusionVAE", 2048)
+            dyn_s._OBSERVED_NON_DYNAMIC_PEAKS[sku_key] = sku_total * 2
+            mm_s.load_models_gpu([vae_s], memory_required=2048 * mib, force_full_load=True)
+            expected_cap = int(sku_total * 0.85)
+            self.assertEqual(big_dyn.unload_calls, [expected_cap - 2 * gib])
+
+        # Bounded peak dictionary evicts oldest entry beyond 64 entries.
+        dyn._OBSERVED_NON_DYNAMIC_PEAKS.clear()
+        for idx in range(70):
+            dyn._record_observed_peak((0, "M", idx * 64), (idx + 1) * mib)
+        self.assertEqual(len(dyn._OBSERVED_NON_DYNAMIC_PEAKS), 64)
+        self.assertNotIn((0, "M", 0), dyn._OBSERVED_NON_DYNAMIC_PEAKS)
+        self.assertIn((0, "M", 69 * 64), dyn._OBSERVED_NON_DYNAMIC_PEAKS)
+
+    def test_dynamic_vram_inter_tile_safety_valve_and_idempotency(self):
+        gib = 1024**3
+        mib = 1024**2
+        total_32g = 32 * gib
+        dyn, mm, state, dev_cls, model_cls, loaded_cls = self._make_boundary_harness(
+            free_bytes=5000 * mib, total_bytes=total_32g, reserved_bytes=1536 * mib
+        )
+        xpu0 = dev_cls("xpu", 0)
+
+        # Multi-SKU safe floor scaling across 8 / 12 / 16 / 24 / 32 GiB.
+        self.assertEqual(dyn._inter_tile_safe_floor(8 * gib), int(8 * gib * 0.12))
+        self.assertEqual(dyn._inter_tile_safe_floor(12 * gib), int(12 * gib * 0.12))
+        self.assertEqual(dyn._inter_tile_safe_floor(16 * gib), int(16 * gib * 0.12))
+        self.assertEqual(dyn._inter_tile_safe_floor(24 * gib), int(24 * gib * 0.12))
+        self.assertEqual(dyn._inter_tile_safe_floor(32 * gib), 3072 * mib)
+        self.assertEqual(dyn._inter_tile_safe_floor(2 * gib), 512 * mib)
+        self.assertEqual(dyn._inter_tile_safe_floor(0), 1024 * mib)
+
+        ltxav = model_cls("LTXAV", dynamic=True, size=20000 * mib, loaded=16000 * mib, load_device=xpu0)
+        vae = model_cls("CausalDiffusionVAE", dynamic=False, size=1404 * mib, loaded=1404 * mib, load_device=xpu0)
+        mm.current_loaded_models = [loaded_cls(ltxav), loaded_cls(vae)]
+
+        xpu_metrics = {
+            "rsv": 3000 * mib,
+            "alloc": 2900 * mib,
+            "max_rsv": 3000 * mib,
+            "empty_calls": 0,
+        }
+        published = []
+        fake_aimdo_ctl = types.SimpleNamespace(
+            publish_torch_cached_bytes=lambda dev, cached: published.append((dev, cached))
+        )
+
+        def _empty_cache():
+            xpu_metrics["empty_calls"] += 1
+            reusable = max(0, xpu_metrics["rsv"] - xpu_metrics["alloc"])
+            xpu_metrics["rsv"] = xpu_metrics["alloc"] + 64 * mib
+            state["free"] += max(0, reusable - 64 * mib)
+
+        dyn.torch.xpu.memory_reserved = lambda dev=0: xpu_metrics["rsv"]
+        dyn.torch.xpu.memory_allocated = lambda dev=0: xpu_metrics["alloc"]
+        dyn.torch.xpu.max_memory_reserved = lambda dev=0: xpu_metrics["max_rsv"]
+        dyn.torch.xpu.empty_cache = _empty_cache
+        dyn.torch.xpu.memory_stats = lambda dev=0: {
+            "reserved_bytes.all.current": xpu_metrics["rsv"],
+            "active_bytes.all.current": xpu_metrics["alloc"],
+        }
+
+        def _fake_tiled_scale(samples, function, **kwargs):
+            return function(samples)
+
+        fake_utils = types.SimpleNamespace(tiled_scale_multidim=_fake_tiled_scale)
+        self.assertTrue(dyn._patch_tiled_scale_multidim(fake_utils))
+        self.assertFalse(dyn._patch_tiled_scale_multidim(fake_utils))  # idempotent
+        self.assertTrue(hasattr(fake_utils.tiled_scale_multidim, dyn._TILED_SCALE_PATCH_MARKER))
+
+        # Prime active non-dynamic context for VAE.
+        mm.load_models_gpu([vae], memory_required=3400 * mib, force_full_load=True)
+        ltxav.unload_calls.clear()
+
+        with mock.patch.object(dyn, "_aimdo_control", fake_aimdo_ctl):
+            # 1. Fast path when free >= safe_floor (3072 MiB): zero empty_cache, zero VBAR unload.
+            state["free"] = 4000 * mib
+            xpu_metrics["rsv"] = 4000 * mib
+            xpu_metrics["alloc"] = 3000 * mib
+            out = fake_utils.tiled_scale_multidim(types.SimpleNamespace(device=xpu0), lambda s: "tile_ok")
+            self.assertEqual(out, "tile_ok")
+            self.assertEqual(xpu_metrics["empty_calls"], 0)
+            self.assertEqual(ltxav.unload_calls, [])
+
+            # 2. Pressure path resolved purely by empty_cache (reusable=1000 MiB brings 2500 -> 3436 >= 3072).
+            state["free"] = 2500 * mib
+            xpu_metrics["rsv"] = 4000 * mib
+            xpu_metrics["alloc"] = 3000 * mib
+            fake_utils.tiled_scale_multidim(types.SimpleNamespace(device=xpu0), lambda s: "tile_ok")
+            self.assertEqual(xpu_metrics["empty_calls"], 1)
+            self.assertEqual(published, [(0, 64 * mib)])
+            self.assertEqual(ltxav.unload_calls, [])
+
+            # 3. Pressure path requiring both empty_cache + inactive DynamicVRAM reclaim.
+            state["free"] = 2000 * mib
+            xpu_metrics["rsv"] = 3500 * mib
+            xpu_metrics["alloc"] = 3000 * mib  # reusable = 500 MiB -> frees 436 MiB -> 2436 MiB < 3072 MiB
+            fake_utils.tiled_scale_multidim(types.SimpleNamespace(device=xpu0), lambda s: "tile_ok")
+            self.assertEqual(xpu_metrics["empty_calls"], 2)
+            self.assertEqual(len(ltxav.unload_calls), 1)
+            self.assertEqual(vae.unload_calls, [])
+            self.assertGreaterEqual(state["free"], 3072 * mib)
+
+            # 4. Opt-out env and torch.compiler.is_compiling() bypass wrapping cleanly.
+            ltxav.unload_calls.clear()
+            state["free"] = 1000 * mib
+            xpu_metrics["rsv"] = 2000 * mib
+            xpu_metrics["alloc"] = 1500 * mib
+            with mock.patch.dict(os.environ, {"OMNIXPU_DYNAMIC_VRAM_INTER_TILE_RECLAIM": "0"}, clear=False):
+                fake_utils.tiled_scale_multidim(types.SimpleNamespace(device=xpu0), lambda s: "bypass_env")
+            self.assertEqual(xpu_metrics["empty_calls"], 2)
+            self.assertEqual(ltxav.unload_calls, [])
+
+            dyn.torch.compiler = types.SimpleNamespace(is_compiling=lambda: True)
+            try:
+                fake_utils.tiled_scale_multidim(types.SimpleNamespace(device=xpu0), lambda s: "bypass_compile")
+                self.assertEqual(xpu_metrics["empty_calls"], 2)
+                self.assertEqual(ltxav.unload_calls, [])
+            finally:
+                dyn.torch.compiler = types.SimpleNamespace(is_compiling=lambda: False)
+
+            # 5. Errors raised by the tile function itself propagate untouched.
+            with self.assertRaisesRegex(RuntimeError, "tile boom"):
+                fake_utils.tiled_scale_multidim(
+                    types.SimpleNamespace(device=xpu0),
+                    lambda s: (_ for _ in ()).throw(RuntimeError("tile boom")),
+                )
 
 
 if __name__ == "__main__":

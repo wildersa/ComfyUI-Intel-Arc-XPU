@@ -67,6 +67,10 @@ class Config:
             self.dynamic_vram_boundary_trim
             and os.environ.get("OMNIXPU_DYNAMIC_VRAM_NON_DYNAMIC_TRIM", "1") != "0"
         )
+        self.dynamic_vram_inter_tile_reclaim = (
+            self.dynamic_vram_non_dynamic_trim
+            and os.environ.get("OMNIXPU_DYNAMIC_VRAM_INTER_TILE_RECLAIM", "1") != "0"
+        )
         self.dynamic_vram_get_free_memory = (
             self.dynamic_vram_boundary_trim
             and os.environ.get("OMNIXPU_DYNAMIC_VRAM_GET_FREE_MEMORY", "1") != "0"
@@ -111,6 +115,9 @@ class Config:
         )
         self.qsv_video_encode = (
             master and os.environ.get("OMNIXPU_QSV_VIDEO_ENCODE", "1") != "0"
+        )
+        self.na3d_eager = (
+            master and os.environ.get("OMNIXPU_NA3D_EAGER", "1") != "0"
         )
 
 

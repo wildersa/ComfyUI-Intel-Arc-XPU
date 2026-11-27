@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import time
+import types
 from contextlib import nullcontext
 
 import torch
@@ -34,8 +35,13 @@ _GET_FREE_MEMORY_PATCH_MARKER = "__omnixpu_dynamic_vram_get_free_memory_original
 _MP_GET_FREE_MEMORY_PATCH_MARKER = "__omnixpu_dynamic_vram_mp_get_free_memory_original__"
 _STEP_PATCH_MARKER = "__omnixpu_dynamic_vram_step_original__"
 _FAULT_PATCH_MARKER = "__omnixpu_dynamic_vram_fault_original__"
+_TILED_SCALE_PATCH_MARKER = "__omnixpu_dynamic_vram_tiled_scale_original__"
 _FAULT_COUNTS = {"ok": 0, "none": 0}
 _TRIM_STATE = {}
+_OBSERVED_NON_DYNAMIC_PEAKS = {}
+_ACTIVE_NON_DYNAMIC_CONTEXT = {}
+_MAX_OBSERVED_PEAK_ENTRIES = 64
+_MODEL_MANAGEMENT_REF = None
 _DEFAULT_TORCH_CACHE_TRIM_INTERVAL_S = 2.0
 _DEFAULT_TORCH_CACHE_TRIM_MIN_MIB = 512
 _DEFAULT_TORCH_CACHE_TRIM_FREE_MIB = 4096
@@ -67,6 +73,17 @@ def _non_dynamic_trim_enabled():
         return os.environ.get("OMNIXPU_ENABLE", "1") != "0" and env_val != "0"
     if _config is not None:
         return bool(getattr(_config, "dynamic_vram_non_dynamic_trim", True))
+    return True
+
+
+def _inter_tile_reclaim_enabled():
+    if not _non_dynamic_trim_enabled():
+        return False
+    env_val = os.environ.get("OMNIXPU_DYNAMIC_VRAM_INTER_TILE_RECLAIM")
+    if env_val is not None:
+        return os.environ.get("OMNIXPU_ENABLE", "1") != "0" and env_val != "0"
+    if _config is not None:
+        return bool(getattr(_config, "dynamic_vram_inter_tile_reclaim", True))
     return True
 
 
@@ -454,6 +471,86 @@ def _trim_pass(model_management, device, target, requested, include_requested):
     return reclaimed, trimmed
 
 
+def _xpu_device(dev_idx: int):
+    dev_cls = getattr(torch, "device", None)
+    if callable(dev_cls):
+        try:
+            return dev_cls("xpu", dev_idx)
+        except Exception:
+            pass
+    return types.SimpleNamespace(type="xpu", index=dev_idx)
+
+
+def _sample_max_memory_reserved(device_or_idx) -> int:
+    fn = getattr(torch.xpu, "max_memory_reserved", None)
+    if not callable(fn):
+        return 0
+    try:
+        return max(0, int(fn(device_or_idx)))
+    except Exception:
+        return 0
+
+
+def _model_class_label(model) -> str:
+    inner = getattr(model, "model", None)
+    target = inner if inner is not None else model
+    return type(target).__name__
+
+
+def _non_dynamic_peak_key(dev_idx: int, non_dyn_models, memory_required: int):
+    label = "+".join(_model_class_label(m) for m in non_dyn_models) or "unknown"
+    bucket_mib = int(round(max(0, int(memory_required)) / (64 * _MIB))) * 64
+    return (int(dev_idx), label, bucket_mib)
+
+
+def _record_observed_peak(key, peak_bytes: int) -> int:
+    peak_bytes = max(0, int(peak_bytes))
+    if peak_bytes <= 0:
+        return _OBSERVED_NON_DYNAMIC_PEAKS.get(key, 0)
+    prev = _OBSERVED_NON_DYNAMIC_PEAKS.get(key, 0)
+    new_val = max(prev, peak_bytes)
+    if key in _OBSERVED_NON_DYNAMIC_PEAKS:
+        _OBSERVED_NON_DYNAMIC_PEAKS.pop(key, None)
+    elif len(_OBSERVED_NON_DYNAMIC_PEAKS) >= _MAX_OBSERVED_PEAK_ENTRIES:
+        oldest_key = next(iter(_OBSERVED_NON_DYNAMIC_PEAKS))
+        _OBSERVED_NON_DYNAMIC_PEAKS.pop(oldest_key, None)
+    _OBSERVED_NON_DYNAMIC_PEAKS[key] = new_val
+    return new_val
+
+
+def _finalize_active_non_dynamic_context(dev_idx: int) -> None:
+    ctx = _ACTIVE_NON_DYNAMIC_CONTEXT.pop(dev_idx, None)
+    if ctx is None:
+        return
+    cur_max_rsv = _sample_max_memory_reserved(dev_idx)
+    if cur_max_rsv > ctx["pre_max_rsv"]:
+        _record_observed_peak(ctx["key"], cur_max_rsv)
+
+
+def _inter_tile_safe_floor(total_vram: int) -> int:
+    if total_vram > 0:
+        return max(512 * _MIB, min(3072 * _MIB, int(total_vram * 0.12)))
+    return 1024 * _MIB
+
+
+def _resolve_model_management(active_ctx=None):
+    if active_ctx is not None:
+        mm = active_ctx.get("model_management")
+        if mm is not None:
+            return mm
+    if _MODEL_MANAGEMENT_REF is not None:
+        return _MODEL_MANAGEMENT_REF
+    mod = sys.modules.get("comfy.model_management")
+    if mod is not None:
+        return mod
+    try:
+        import comfy.model_management as mod
+
+        return mod
+    except Exception:
+        return None
+
+
 def _trim_dynamic_boundary(
     model_management,
     models,
@@ -463,6 +560,8 @@ def _trim_dynamic_boundary(
     load_args=None,
     load_kwargs=None,
 ):
+    global _MODEL_MANAGEMENT_REF
+    _MODEL_MANAGEMENT_REF = model_management
     if not models:
         return
 
@@ -482,6 +581,8 @@ def _trim_dynamic_boundary(
             continue
         seen_xpu_indices.add(dev_idx)
 
+        _finalize_active_non_dynamic_context(dev_idx)
+
         device_models = [
             m
             for m in models
@@ -492,6 +593,7 @@ def _trim_dynamic_boundary(
         base_target = int(target)
         if total_vram > 0:
             base_target = min(base_target, total_vram)
+        unscaled_base = int(target)
         if device_has_non_dynamic:
             dev_extra = extra_target
             if load_args is not None:
@@ -502,16 +604,6 @@ def _trim_dynamic_boundary(
                     device=device,
                     non_dynamic=True,
                 )
-            if dev_extra is not None:
-                base_target = max(base_target, int(dev_extra))
-
-        unloaded_dynamic, unloaded_static = _unloaded_model_bytes(device_models, device)
-        # Mirror ComfyUI load_models_gpu (1.1x unloaded static weights + extra_mem).
-        static_budget = (unloaded_static * 11 + 9) // 10 if unloaded_static > 0 else 0
-        inactive_target = base_target + static_budget
-        if device_has_non_dynamic and total_vram > 0:
-            unscaled_base = int(target)
-            if load_args is not None:
                 unscaled_base = max(
                     unscaled_base,
                     _extra_memory_target(
@@ -522,6 +614,54 @@ def _trim_dynamic_boundary(
                         non_dynamic=False,
                     ),
                 )
+            if total_vram > 0:
+                unscaled_base = min(unscaled_base, total_vram)
+            if dev_extra is not None:
+                base_target = max(base_target, int(dev_extra))
+
+            cur_max_rsv = _sample_max_memory_reserved(dev_idx)
+            non_dyn_models = [m for m in device_models if not _is_dynamic_model(m)]
+            raw_mem_req = int(
+                _load_argument(
+                    load_args or (), load_kwargs or {}, "memory_required", 0, 0
+                )
+                or 0
+            )
+            peak_key = _non_dynamic_peak_key(dev_idx, non_dyn_models, raw_mem_req)
+            observed_peak = _OBSERVED_NON_DYNAMIC_PEAKS.get(peak_key, 0)
+            if observed_peak > 0:
+                reserved = int(model_management.extra_reserved_memory())
+                observed_target = int(observed_peak) + reserved
+                if total_vram > 0:
+                    obs_cap = max(
+                        unscaled_base,
+                        int(total_vram * _DEFAULT_NON_DYNAMIC_MAX_TOTAL_FRACTION),
+                    )
+                    observed_target = min(observed_target, obs_cap, total_vram)
+                if observed_target > base_target:
+                    base_target = observed_target
+                    log.info(
+                        "[OmniXPU] DynamicVRAM non-dynamic observed peak: "
+                        "model=%s key_mib=%d peak_rsv=%.1fMiB -> base_target=%.1fMiB",
+                        peak_key[1],
+                        peak_key[2],
+                        observed_peak / _MIB,
+                        base_target / _MIB,
+                    )
+
+            _ACTIVE_NON_DYNAMIC_CONTEXT[dev_idx] = {
+                "key": peak_key,
+                "pre_max_rsv": cur_max_rsv,
+                "model_ids": requested,
+                "device": device,
+                "model_management": model_management,
+            }
+
+        unloaded_dynamic, unloaded_static = _unloaded_model_bytes(device_models, device)
+        # Mirror ComfyUI load_models_gpu (1.1x unloaded static weights + extra_mem).
+        static_budget = (unloaded_static * 11 + 9) // 10 if unloaded_static > 0 else 0
+        inactive_target = base_target + static_budget
+        if device_has_non_dynamic and total_vram > 0:
             non_dyn_cap = max(
                 min(unscaled_base + static_budget, total_vram),
                 int(total_vram * _DEFAULT_NON_DYNAMIC_MAX_TOTAL_FRACTION),
@@ -1233,7 +1373,152 @@ def _patch_model_patcher_get_free_memory(
     return True
 
 
+def _after_tile_step(f_args):
+    try:
+        active_ctx = None
+        if _ACTIVE_NON_DYNAMIC_CONTEXT:
+            if (
+                f_args
+                and getattr(getattr(f_args[0], "device", None), "type", None) == "xpu"
+            ):
+                active_ctx = _ACTIVE_NON_DYNAMIC_CONTEXT.get(
+                    _device_index(f_args[0].device)
+                )
+            if active_ctx is None:
+                active_ctx = next(iter(_ACTIVE_NON_DYNAMIC_CONTEXT.values()), None)
+
+        if active_ctx is not None:
+            device = active_ctx["device"]
+            dev_idx = _device_index(device)
+        else:
+            dev_idx = (
+                _device_index(f_args[0].device)
+                if f_args
+                and getattr(getattr(f_args[0], "device", None), "type", None) == "xpu"
+                else 0
+            )
+            device = _xpu_device(dev_idx)
+
+        cur_rsv = int(torch.xpu.memory_reserved(dev_idx))
+        cur_alloc = int(torch.xpu.memory_allocated(dev_idx))
+        cur_max_rsv = _sample_max_memory_reserved(dev_idx)
+
+        if active_ctx is not None:
+            peak_obs = cur_rsv
+            if cur_max_rsv > active_ctx["pre_max_rsv"]:
+                peak_obs = max(peak_obs, cur_max_rsv)
+            _record_observed_peak(active_ctx["key"], peak_obs)
+
+        free_before, total_vram = torch.xpu.mem_get_info(dev_idx)
+        free_before = int(free_before)
+        total_vram = int(total_vram)
+        mm = _resolve_model_management(active_ctx)
+        if total_vram <= 0 and mm is not None:
+            total_vram = _device_total_vram(mm, device)
+
+        safe_floor = _inter_tile_safe_floor(total_vram)
+        if free_before >= safe_floor:
+            return
+
+        cache_flushed = False
+        reusable = max(0, cur_rsv - cur_alloc)
+        if reusable >= 256 * _MIB:
+            empty_cache = getattr(torch.xpu, "empty_cache", None)
+            if callable(empty_cache):
+                empty_cache()
+                cache_flushed = True
+                after_rsv = int(torch.xpu.memory_reserved(dev_idx))
+                after_alloc = int(torch.xpu.memory_allocated(dev_idx))
+                after_reusable = max(0, after_rsv - after_alloc)
+                publish = (
+                    getattr(_aimdo_control, "publish_torch_cached_bytes", None)
+                    if _aimdo_control is not None
+                    else None
+                )
+                if callable(publish):
+                    try:
+                        publish(dev_idx, after_reusable)
+                    except Exception:
+                        pass
+
+        free_bytes = int(torch.xpu.mem_get_info(dev_idx)[0])
+        vbar_reclaimed = 0
+        if (
+            free_bytes < safe_floor
+            and mm is not None
+            and hasattr(mm, "current_loaded_models")
+        ):
+            active_model_ids = (
+                active_ctx["model_ids"] if active_ctx is not None else set()
+            )
+            trim_target = safe_floor + _reusable_torch_bytes(device)
+            if total_vram > 0:
+                trim_target = min(trim_target, total_vram)
+            vbar_reclaimed, _ = _trim_pass(
+                mm, device, trim_target, active_model_ids, include_requested=False
+            )
+
+        free_after = int(torch.xpu.mem_get_info(dev_idx)[0])
+        if cache_flushed or vbar_reclaimed > 0:
+            log.info(
+                "[OmniXPU] DynamicVRAM inter-tile reclaim: device=xpu:%d "
+                "free=%.1f->%.1fMiB floor=%.1fMiB vbar_reclaimed=%.1fMiB cache_flushed=%d",
+                dev_idx,
+                free_before / _MIB,
+                free_after / _MIB,
+                safe_floor / _MIB,
+                vbar_reclaimed / _MIB,
+                1 if cache_flushed else 0,
+            )
+        else:
+            log.debug(
+                "[OmniXPU] DynamicVRAM inter-tile reclaim: device=xpu:%d "
+                "free=%.1f->%.1fMiB floor=%.1fMiB vbar_reclaimed=0.0MiB cache_flushed=0",
+                dev_idx,
+                free_before / _MIB,
+                free_after / _MIB,
+                safe_floor / _MIB,
+            )
+    except Exception as exc:
+        log.debug("[OmniXPU] DynamicVRAM inter-tile check skipped: %s", exc)
+
+
+def _patch_tiled_scale_multidim(utils_mod=None):
+    if utils_mod is None:
+        try:
+            import comfy.utils as utils_mod
+        except Exception:
+            return False
+
+    original = getattr(utils_mod, "tiled_scale_multidim", None)
+    if original is None or hasattr(original, _TILED_SCALE_PATCH_MARKER):
+        return False
+
+    @functools.wraps(original)
+    def xpu_tiled_scale_multidim(samples, function, *args, **kwargs):
+        compiler = getattr(torch, "compiler", None)
+        is_compiling_fn = getattr(compiler, "is_compiling", None)
+        is_compiling = bool(is_compiling_fn()) if callable(is_compiling_fn) else False
+        xpu_avail_fn = getattr(getattr(torch, "xpu", None), "is_available", None)
+        xpu_avail = bool(xpu_avail_fn()) if callable(xpu_avail_fn) else False
+        if not xpu_avail or not _inter_tile_reclaim_enabled() or is_compiling:
+            return original(samples, function, *args, **kwargs)
+
+        def guarded_function(*f_args, **f_kwargs):
+            result = function(*f_args, **f_kwargs)
+            _after_tile_step(f_args)
+            return result
+
+        return original(samples, guarded_function, *args, **kwargs)
+
+    setattr(xpu_tiled_scale_multidim, _TILED_SCALE_PATCH_MARKER, original)
+    utils_mod.tiled_scale_multidim = xpu_tiled_scale_multidim
+    return True
+
+
 def _patch_model_loader(model_management):
+    global _MODEL_MANAGEMENT_REF
+    _MODEL_MANAGEMENT_REF = model_management
     original = model_management.load_models_gpu
     if hasattr(original, _PATCH_MARKER):
         return
@@ -1288,6 +1573,7 @@ def apply():
             log.debug(
                 "[OmniXPU] ModelPatcher.get_free_memory patch skipped: %s", exc
             )
+    _patch_tiled_scale_multidim()
     _patch_cfg_guider_steps()
     if _torch_cache_trim_enabled() or _step_trace_enabled():
         _ensure_fault_tracer()

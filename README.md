@@ -13,7 +13,7 @@
 
 **What this extension solves:** `ComfyUI-Intel-Arc-XPU` brings native **Intel Arc Battlemage (`bmg` / Arc Pro B70)** acceleration to **ComfyUI on Windows** as a drop-in custom node extension (**zero core ComfyUI files modified**):
 - Bundled **Windows XPU native kernels** (`omni_xpu_kernel`: SDP/attention, norms, rotary, INT8, FP8, layout) and `comfy-kitchen` XPU backend (`INT8`, `ConvRot`, `W4A8`, `FP8`).
-- **Windows `DynamicVRAM`** (`comfy-aimdo-xpu-runtime`) with host RAM weight staging so large models (`WAN`, `MiniMax H3`, `FLUX`, `Qwen`) run without OOM.
+- **Windows `DynamicVRAM`** (`comfy-aimdo-xpu-runtime`) with host RAM weight staging so large models (`LTX-2.5`, `WAN`, `MiniMax H3`, `FLUX`, `Qwen`) run without OOM.
 - **Model adapters & `CUTE` FMHA attention routing** from `ComfyUI-OmniXPU`, plus diagnostics (`OmniXPU Status`) and clean fallbacks if ComfyUI updates.
 
 > [!NOTE]
@@ -144,7 +144,9 @@ Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** c
 | --- | --- | --- | --- | --- |
 | **`MOSS-Image`** | `int8_convrot` + `W4A8`, `25` steps | `375.28s` cold · `50.75s` warm | `103.45s` cold · `20.01s` warm | **`29.53s`** cold (`12.7×`) · **`18.27s`** warm (`2.78×`) |
 | **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | `209.29s` cold · `179.84s` warm | **`186.08s`** cold (`2.15×`) · **`160.25s`** warm (`9.87×`) |
-| **`MiniMax H3 Ref2VA` (10s / 243f)** | `1344×768`, `4`-step Turbo *(with `comfy-aimdo-xpu#37` + `TORCH_CACHE_TRIM`; optional `ComfyUI-Ref2VA-VSA` for `sol-attn`)* | — *(not tested)* | — | **`490.49s`** dense · **`359.05s`** (`sol-attn`) *(vs `530.62s` pre-fix, `rel=0` VBAR)* |
+| **`MiniMax H3 Ref2VA` (10s / 243f)** | `1344×768`, `4`-step Turbo *(with `comfy-aimdo-xpu#37` + `TORCH_CACHE_TRIM`; optional `ComfyUI-Ref2VA-VSA` for `sol-attn`)* | — *(not tested)* | — | **`490.49s`** dense · **`342.62s`** (`sol-attn`, `v0.2.7+`) *(vs `359.05s` pre-`v0.2.7`, `530.62s` pre-fix; `rel=0` VBAR)* |
+| **`LTX-2.5 T2V` (22B, 5s / 121f)** | `int8_convrot` (`LTXAV` + `Gemma 4 12B`), `1280×704`, `8+3` distilled steps, `VAEDecodeTiled [512, 64, 64, 16]` | — *(not tested)* | — | **`107.99s`** cold · **`67.26s`** warm *(cached TE, `v0.2.8`; `69.04s` pre-`na3d_eager`)* |
+| **`LTX-2.5 T2V` (22B, short / high-res)** | `int8_convrot`, `8+3` steps (`q=1456→5824` short · `q=8160→32640` high-res) | — *(not tested)* | — | **`26.79s`** warm (`66.66s` cold, `39.64s–47.56s` new prompt) · **`175.63s`** warm (`213.97s` cold, high-res) |
 | **`Qwen Image 2.1 T2I`** | `int8_convrot`, `1024×1024`, `25` steps | — *(not tested)* | `22.48s` cold · `12.58s` warm | **`21.51s`** cold · **`11.38s`** warm |
 | **`Z-Image Turbo`** | `bf16`, `1024×1024`, `8` steps | — *(not tested)* | — | **`33.41s`** cold · **`5.19s`–`5.27s`** warm |
 | **`WAN 2.2 T2V 14B` (4-step LightX2V)** | `fp8_scaled` + `lightx2v` LoRA, `4` steps (`2+2`), `cfg=1.0` | — *(not tested)* | `104.37s` cold | **`93.09s`** cold · **`82.62s`** warm |
@@ -171,6 +173,9 @@ Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** c
 | `OMNI_ATTN_BACKEND` | `torch` | `torch` (PyTorch SDPA), `cute` (CUTLASS-SYCL FMHA), `auto`, or `esimd`. |
 | `OMNIXPU_PROVIDER_BOOTSTRAP` | `auto` | Provider routing mode: `auto`, `off`, or `required`. |
 | `OMNIXPU_DYNAMIC_VRAM_TORCH_CACHE_TRIM` | `1` | Rate-limited `torch.xpu.empty_cache()` during `vbar_fault` pressure (`0` disables). |
+| `OMNIXPU_DYNAMIC_VRAM_NON_DYNAMIC_TRIM` | `1` | Reclaims inactive DynamicVRAM VBAR before non-dynamic models such as `CausalDiffusionVAE` (`0` disables). |
+| `OMNIXPU_DYNAMIC_VRAM_INTER_TILE_RECLAIM` | `1` | Inter-tile VRAM safety valve during `VAEDecodeTiled` (`0` disables). |
+| `OMNIXPU_NA3D_EAGER` | `1` | Batched XPU eager `na3d` adapter for LTX-2.5 `CausalDiffusionVAE` (`0` disables; `OMNIXPU_NA3D_EAGER_GMAX` overrides group cap). |
 | `OMNIXPU_XPU_MEMORY_FRACTION` | `0.99` | Caching-allocator fraction applied on prestartup (`0` / `off` disables). |
 | `OMNIXPU_ENABLE` | `1` | Set to `0` to disable all OmniXPU providers and patches. |
 | `OMNIXPU_DEBUG` / `OMNIXPU_DEBUG_VERBOSE` | `0` | Set to `1` for kernel or dispatch tracing. |

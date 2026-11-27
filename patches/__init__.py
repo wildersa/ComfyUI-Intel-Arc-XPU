@@ -197,6 +197,13 @@ COMPONENTS = (
         "ComfyUI-OmniXPU",
         "adapters/video_encode.py",
     ),
+    Component(
+        "na3d_eager_adapter",
+        "na3d_eager",
+        "adapter",
+        "ComfyUI-OmniXPU",
+        "adapters/na3d_eager.py",
+    ),
 )
 
 
