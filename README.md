@@ -1,5 +1,14 @@
 # ComfyUI-Intel-Arc-XPU
 
+> [!IMPORTANT]
+> **Experimental Windows Intel XPU extension — limited hardware validation scope**
+>
+> This packaging and its Windows XPU adapters are developed and hardware-validated primarily on **Windows 11 x64** with **Intel Arc Pro B70 (`32 GB`, Battlemage / `bmg`)** running **Python `3.13`** and **`torch==2.13.0+xpu`**.
+>
+> Other GPU SKUs (such as `B580`, `B50`, `B60`, Alchemist, or iGPUs), operating systems, driver/PyTorch/ComfyUI versions, and workloads are outside the hardware-validated scope. While defensive multi-SKU memory guards and unit tests are included, compatibility, correctness, output quality, stability, and performance outside the validated setup are not guaranteed.
+>
+> If you hit an issue or have a requirement outside the current scope, feel free to open an issue with your full environment, GPU/driver versions, and a reproducible example. This work is experimental; ongoing maintenance and updates depend on available time, capacity, and upstream Intel XPU releases.
+
 **The problem:** Out of the box, ComfyUI on Windows does **not** ship native **Intel Arc (`xpu`)** compute kernels, an XPU backend for `comfy-kitchen`, Windows `DynamicVRAM` (`comfy-aimdo` XPU overlay), or Intel XPU model adapters. Even with PyTorch XPU installed, stock ComfyUI falls back to generic PyTorch paths, slow weight emulation, and static VRAM allocation — causing multi-minute stalls or `XPU out of memory` on large image and video models.
 
 **What this extension solves:** `ComfyUI-Intel-Arc-XPU` brings native **Intel Arc Battlemage (`bmg` / Arc Pro B70)** acceleration to **ComfyUI on Windows** as a drop-in custom node extension (**zero core ComfyUI files modified**):
@@ -147,7 +156,10 @@ Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** c
 
 ## 7. Licenses, Upstream Sources & Advanced Variables
 
-- **Prefer Not to Use Prebuilt Binaries?** Follow Intel's official `omni` stack and custom-node instructions directly at **<https://github.com/intel/llm-scaler/tree/main/omni>** and **<https://github.com/intel/llm-scaler/tree/main/omni/ComfyUI-OmniXPU>** to build/install from Intel's sources.
+- **Prefer Not to Use Prebuilt Binaries? (Build from Upstream Sources):** You can build and install each component directly from its upstream repository:
+  - **`omni_xpu_kernel` & `ComfyUI-OmniXPU`:** <https://github.com/intel/llm-scaler/tree/main/omni> and <https://github.com/intel/llm-scaler/tree/main/omni/ComfyUI-OmniXPU>
+  - **`comfy-kitchen-xpu-runtime`:** <https://github.com/xiangyuT/comfy-kitchen-xpu>
+  - **`comfy-aimdo-xpu-runtime`:** <https://github.com/xiangyuT/comfy-aimdo-xpu>
 - **Licenses:** Apache License 2.0 ([`LICENSE`](./LICENSE)) and GNU General Public License v3.0 ([`LICENSE-GPL-3.0.txt`](./LICENSE-GPL-3.0.txt) for `comfy-aimdo-xpu-runtime`).
 - **Attributions & Checksums:** [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) (`intel/llm-scaler`, `xiangyuT/comfy-kitchen-xpu`, `xiangyuT/comfy-aimdo-xpu`, `Comfy-Org/comfy-aimdo`, `oneDNN`, `Strata`, `Level Zero`, `Detours`) · [`SHA256SUMS.txt`](./SHA256SUMS.txt) · [`CHANGELOG.md`](./CHANGELOG.md).
 
