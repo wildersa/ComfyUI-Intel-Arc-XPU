@@ -16,6 +16,36 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Extract changelog for current version
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+          ver_match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', pyproject)
+          version = ver_match.group(1).strip() if ver_match else ""
+          changelog_path = Path("CHANGELOG.md")
+          notes = ""
+          if version and changelog_path.is_file():
+              text = changelog_path.read_text(encoding="utf-8")
+              pattern = rf"(?ms)^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)"
+              match = re.search(pattern, text)
+              if match:
+                  notes = match.group(1).strip()
+          if notes:
+              delimiter = "__COMFY_CHANGELOG_EOF__"
+              while delimiter in notes:
+                  delimiter += "_X"
+              with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+                  fh.write(f"COMFY_NODE_CHANGELOG<<{delimiter}\n{notes}\n{delimiter}\n")
+              print(f"Loaded COMFY_NODE_CHANGELOG for v{version} ({len(notes)} chars)")
+          else:
+              print(f"No CHANGELOG.md section found for v{version!r}; publishing without Updates notes")
+          PY
+
       - name: Publish Custom Node
         uses: Comfy-Org/publish-node-action@main
         with:
