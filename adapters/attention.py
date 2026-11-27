@@ -24,6 +24,14 @@ _attention_traced_contracts = set()
 
 _MINIMAX_H3_H56_CUTE_MIN_SEQUENCE = 31
 _MINIMAX_H3_VAE_D64_CUTE_MIN_SEQUENCE = 6
+_MINIMAX_H3_Q_CHUNK_ENV = "OMNIXPU_H3_CUTE_Q_CHUNK"
+_MINIMAX_H3_Q_CHUNK_MIN_SEQ_ENV = "OMNIXPU_H3_CUTE_Q_CHUNK_MIN_SEQ"
+_MINIMAX_H3_Q_CHUNK_SIZE_ENV = "OMNIXPU_H3_CUTE_Q_CHUNK_SIZE"
+_MINIMAX_H3_Q_CHUNK_SYNC_ENV = "OMNIXPU_H3_CUTE_Q_CHUNK_SYNC"
+_MINIMAX_H3_Q_CHUNK_DEFAULT_MIN_SEQ = 44000
+_MINIMAX_H3_Q_CHUNK_DEFAULT_SIZE = 16384
+_h3_q_chunk_log_count = 0
+_h3_q_chunk_logged_shapes = set()
 _CUTE_D128_MAX_DENSE_ELEMENTS = (1 << 31) - 1
 # Short rectangular queries can lose their CUTE advantage to tail work.
 _BMG_D128_PREFIX_MIN_QUERY = 2048
@@ -827,6 +835,99 @@ def _load_cute_backend():
         return None, f"cute load failed: {e}"
 
 
+def _env_positive_int(name, default):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(1, int(raw.strip()))
+    except ValueError:
+        return default
+
+
+def _h3_q_chunk_config():
+    """Return (enabled, min_seq, chunk_size, sync_between_chunks) for H=56 Q-chunking."""
+    master = os.environ.get("OMNIXPU_ENABLE", "1") != "0"
+    enabled = master and os.environ.get(_MINIMAX_H3_Q_CHUNK_ENV, "1").strip() != "0"
+    min_seq = _env_positive_int(
+        _MINIMAX_H3_Q_CHUNK_MIN_SEQ_ENV, _MINIMAX_H3_Q_CHUNK_DEFAULT_MIN_SEQ
+    )
+    chunk_size = _env_positive_int(
+        _MINIMAX_H3_Q_CHUNK_SIZE_ENV, _MINIMAX_H3_Q_CHUNK_DEFAULT_SIZE
+    )
+    sync_default = "1" if sys.platform == "win32" else "0"
+    sync = os.environ.get(_MINIMAX_H3_Q_CHUNK_SYNC_ENV, sync_default).strip() == "1"
+    return enabled, min_seq, chunk_size, sync
+
+
+def _run_minimax_h3_cute_d128(
+    q_bhld, k_bhld, v_bhld, *, b, heads, q_len, kv_len, dim_head, skip_output_reshape
+):
+    """Run MiniMax H3 (heads=56) CUTE D128 attention, chunking Q above threshold.
+
+    Pre-allocating the single output tensor and slicing only Q keeps exact
+    attention math while bounding each Windows WDDM kernel submission well
+    below the 2s TDR timeout without a duplicate torch.cat buffer.
+    """
+    global _h3_q_chunk_log_count
+    enabled, min_seq, chunk_size, sync_chunks = _h3_q_chunk_config()
+    if (
+        not enabled
+        or torch.compiler.is_compiling()
+        or q_len < min_seq
+        or q_len <= chunk_size
+    ):
+        out = _backend_sdp.sdp_bhld_d128(q_bhld, k_bhld, v_bhld)
+        if skip_output_reshape:
+            return out
+        return out.transpose(1, 2).reshape(b, -1, heads * dim_head)
+
+    chunk_count = (q_len + chunk_size - 1) // chunk_size
+    if _h3_q_chunk_log_count == 0 and _h3_q_chunk_logged_shapes:
+        _h3_q_chunk_logged_shapes.clear()
+    shape_key = (heads, q_len, kv_len, chunk_size, sync_chunks)
+    if (
+        shape_key not in _h3_q_chunk_logged_shapes
+        and len(_h3_q_chunk_logged_shapes) < 16
+    ):
+        _h3_q_chunk_logged_shapes.add(shape_key)
+        _h3_q_chunk_log_count += 1
+        log.info(
+            "[OmniXPU] attention CUTE_BHLD_D128 Q-chunked #%d: "
+            "heads=%d q=%d kv=%d chunk_size=%d chunks=%d sync=%s",
+            _h3_q_chunk_log_count,
+            heads,
+            q_len,
+            kv_len,
+            chunk_size,
+            chunk_count,
+            sync_chunks,
+        )
+
+    out_shape = (
+        (b, heads, q_len, dim_head)
+        if skip_output_reshape
+        else (b, q_len, heads * dim_head)
+    )
+    out = torch.empty(out_shape, device=q_bhld.device, dtype=q_bhld.dtype)
+    sync_fn = getattr(getattr(torch, "xpu", None), "synchronize", None)
+    for start in range(0, q_len, chunk_size):
+        end = min(q_len, start + chunk_size)
+        chunk_out = _backend_sdp.sdp_bhld_d128(
+            q_bhld[:, :, start:end, :], k_bhld, v_bhld
+        )
+        if skip_output_reshape:
+            out[:, :, start:end, :].copy_(chunk_out)
+        else:
+            out[:, start:end, :].copy_(
+                chunk_out.transpose(1, 2).reshape(b, end - start, heads * dim_head)
+            )
+        del chunk_out
+        if sync_chunks and callable(sync_fn):
+            sync_fn(q_bhld.device)
+    return out
+
+
 def get_stats():
     return {
         "policy": _backend,
@@ -1198,6 +1299,18 @@ def apply():
             )
             _, q_bhld, k_bhld, v_bhld = bmg_d128_prepared
             try:
+                if route == "minimax_h3_h56_bf16_d128_qkv_bhld":
+                    return _run_minimax_h3_cute_d128(
+                        q_bhld,
+                        k_bhld,
+                        v_bhld,
+                        b=b,
+                        heads=heads,
+                        q_len=q_len,
+                        kv_len=kv_len,
+                        dim_head=dim_head,
+                        skip_output_reshape=skip_output_reshape,
+                    )
                 out = _backend_sdp.sdp_bhld_d128(
                     q_bhld, k_bhld, v_bhld
                 )

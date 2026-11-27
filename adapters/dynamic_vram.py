@@ -30,10 +30,12 @@ except ImportError:
 log = logging.getLogger("ComfyUI-OmniXPU")
 
 _PATCH_MARKER = "__omnixpu_dynamic_vram_boundary_original__"
+_GET_FREE_MEMORY_PATCH_MARKER = "__omnixpu_dynamic_vram_get_free_memory_original__"
+_MP_GET_FREE_MEMORY_PATCH_MARKER = "__omnixpu_dynamic_vram_mp_get_free_memory_original__"
 _STEP_PATCH_MARKER = "__omnixpu_dynamic_vram_step_original__"
 _FAULT_PATCH_MARKER = "__omnixpu_dynamic_vram_fault_original__"
 _FAULT_COUNTS = {"ok": 0, "none": 0}
-_TRIM_STATE = {"last_attempt": 0.0, "last_unmap": 0, "calls": 0, "freed": 0}
+_TRIM_STATE = {}
 _DEFAULT_TORCH_CACHE_TRIM_INTERVAL_S = 2.0
 _DEFAULT_TORCH_CACHE_TRIM_MIN_MIB = 512
 _DEFAULT_TORCH_CACHE_TRIM_FREE_MIB = 4096
@@ -43,11 +45,38 @@ _VBAR_PAGE_BYTES = 32 * _MIB
 _DEFAULT_BUDGET_KNEE_MIB = 6144
 _DEFAULT_BUDGET_EXCESS_SCALE = 0.35
 _DEFAULT_BUDGET_MAX_FRACTION = 0.40
+_DEFAULT_NON_DYNAMIC_MEMORY_SCALE = 1.5
+_DEFAULT_NON_DYNAMIC_MAX_TOTAL_FRACTION = 0.85
 _FIT_TRIM_ENABLED = (
     _config.dynamic_vram_fit_trim
     if _config is not None
     else os.environ.get("OMNIXPU_DYNAMIC_VRAM_FIT_TRIM", "1") != "0"
 )
+
+
+def _fit_trim_enabled():
+    env_val = os.environ.get("OMNIXPU_DYNAMIC_VRAM_FIT_TRIM")
+    if env_val is not None:
+        return os.environ.get("OMNIXPU_ENABLE", "1") != "0" and env_val != "0"
+    return bool(_FIT_TRIM_ENABLED)
+
+
+def _non_dynamic_trim_enabled():
+    env_val = os.environ.get("OMNIXPU_DYNAMIC_VRAM_NON_DYNAMIC_TRIM")
+    if env_val is not None:
+        return os.environ.get("OMNIXPU_ENABLE", "1") != "0" and env_val != "0"
+    if _config is not None:
+        return bool(getattr(_config, "dynamic_vram_non_dynamic_trim", True))
+    return True
+
+
+def _get_free_memory_patch_enabled():
+    env_val = os.environ.get("OMNIXPU_DYNAMIC_VRAM_GET_FREE_MEMORY")
+    if env_val is not None:
+        return os.environ.get("OMNIXPU_ENABLE", "1") != "0" and env_val != "0"
+    if _config is not None:
+        return bool(getattr(_config, "dynamic_vram_get_free_memory", True))
+    return True
 
 
 def _budget_calibration_enabled():
@@ -80,10 +109,13 @@ def _step_trace_enabled():
 def _torch_cache_trim_enabled():
     env_val = os.environ.get("OMNIXPU_DYNAMIC_VRAM_TORCH_CACHE_TRIM")
     if env_val is not None:
-        return os.environ.get("OMNIXPU_ENABLE", "1") != "0" and env_val == "1"
+        return (
+            os.environ.get("OMNIXPU_ENABLE", "1") != "0"
+            and env_val.strip().lower() not in ("", "0", "false", "no", "off")
+        )
     if _config is not None:
-        return bool(getattr(_config, "dynamic_vram_torch_cache_trim", False))
-    return False
+        return bool(getattr(_config, "dynamic_vram_torch_cache_trim", True))
+    return os.environ.get("OMNIXPU_ENABLE", "1") != "0"
 
 
 def _env_float(name, default, low, high):
@@ -114,6 +146,33 @@ def _load_argument(args, kwargs, name, position, default):
     return default
 
 
+def _is_dynamic_model(model) -> bool:
+    checker = getattr(model, "is_dynamic", None)
+    return bool(checker()) if callable(checker) else False
+
+
+def _device_index(device) -> int:
+    idx = getattr(device, "index", None)
+    if idx is not None:
+        return int(idx)
+    if getattr(device, "type", None) == "xpu":
+        getter = getattr(torch.xpu, "current_device", None)
+        if callable(getter):
+            try:
+                return int(getter())
+            except Exception:
+                pass
+    return 0
+
+
+def _same_device(dev_a, dev_b) -> bool:
+    if dev_a == dev_b:
+        return True
+    if getattr(dev_a, "type", None) == "xpu" and getattr(dev_b, "type", None) == "xpu":
+        return _device_index(dev_a) == _device_index(dev_b)
+    return False
+
+
 def _expanded_models(models):
     pending = list(models)
     expanded = []
@@ -125,20 +184,54 @@ def _expanded_models(models):
             continue
         seen.add(identity)
         expanded.append(model)
-        pending.extend(model.model_patches_models())
+        patches_fn = getattr(model, "model_patches_models", None)
+        if callable(patches_fn):
+            pending.extend(patches_fn())
     return expanded
 
 
-def _minimum_memory_target(model_management, args, kwargs):
-    memory_required = _load_argument(args, kwargs, "memory_required", 0, 0)
+def _extra_memory_target(
+    model_management, args, kwargs, *, device=None, non_dynamic=False
+):
+    memory_required = _load_argument(args, kwargs, "memory_required", 0, 0) or 0
+    reserved = model_management.extra_reserved_memory()
+    inference = model_management.minimum_inference_memory()
+    unscaled = max(inference, memory_required + reserved)
+    total_vram = (
+        _device_total_vram(model_management, device)
+        if device is not None
+        else 0
+    )
+    if not non_dynamic or memory_required <= 0:
+        return min(unscaled, total_vram) if total_vram > 0 else unscaled
+
+    scale = _env_float(
+        "OMNIXPU_DYNAMIC_VRAM_NON_DYNAMIC_SCALE",
+        _DEFAULT_NON_DYNAMIC_MEMORY_SCALE,
+        1.0,
+        2.5,
+    )
+    scaled = max(inference, int(memory_required * scale) + reserved)
+    if total_vram > 0:
+        cap = int(total_vram * _DEFAULT_NON_DYNAMIC_MAX_TOTAL_FRACTION)
+        scaled = min(scaled, max(unscaled, cap), total_vram)
+    return scaled
+
+
+def _minimum_memory_target(model_management, args, kwargs, *, device=None):
     minimum_required = _load_argument(
         args, kwargs, "minimum_memory_required", 2, None
     )
+    if minimum_required is None:
+        return _extra_memory_target(model_management, args, kwargs, device=device)
     reserved = model_management.extra_reserved_memory()
     inference = model_management.minimum_inference_memory()
-    if minimum_required is None:
-        return max(inference, memory_required + reserved)
-    return max(inference, minimum_required + reserved)
+    target = max(inference, minimum_required + reserved)
+    if device is not None:
+        total_vram = _device_total_vram(model_management, device)
+        if total_vram > 0:
+            target = min(target, total_vram)
+    return target
 
 
 def _inference_memory_budget(args, kwargs):
@@ -160,11 +253,10 @@ def _aimdo_budget_scope(models, budget):
 
     devices = sorted(
         {
-            model.load_device.index
+            _device_index(model.load_device)
             for model in models
-            if model.is_dynamic()
+            if _is_dynamic_model(model)
             and getattr(model.load_device, "type", None) == "xpu"
-            and model.load_device.index is not None
         }
     )
     if not devices or budget <= 0:
@@ -172,30 +264,93 @@ def _aimdo_budget_scope(models, budget):
     return budget_scope(budget, devices), tuple(devices)
 
 
-def _actual_free_vram(model_management, device) -> int:
-    """Return real free XPU VRAM including AIMDO VBAR allocations."""
-    base_free = int(model_management.get_free_memory(device))
-    if getattr(device, "type", None) != "xpu":
-        return base_free
-    try:
-        free_device, _ = torch.xpu.mem_get_info(device)
-        stats = torch.xpu.memory_stats(device)
-        reusable_torch = max(
-            0,
-            int(stats.get("reserved_bytes.all.current", 0))
-            - int(stats.get("active_bytes.all.current", 0)),
-        )
-        return int(free_device) + reusable_torch
-    except Exception:
-        pass
-    if _aimdo_model_vbar is not None and hasattr(_aimdo_model_vbar, "vbars_analyze"):
+def _reusable_torch_bytes(device) -> int:
+    stats_fn = getattr(torch.xpu, "memory_stats", None)
+    if callable(stats_fn):
         try:
-            dev_idx = 0 if device.index is None else int(device.index)
-            aimdo_used = int(_aimdo_model_vbar.vbars_analyze(dev_idx))
-            return max(0, base_free - aimdo_used)
+            stats = stats_fn(device)
+            if isinstance(stats, dict):
+                return max(
+                    0,
+                    int(stats.get("reserved_bytes.all.current", 0))
+                    - int(stats.get("active_bytes.all.current", 0)),
+                )
         except Exception:
             pass
-    return base_free
+    try:
+        rsv = int(torch.xpu.memory_reserved(device))
+        alloc = int(torch.xpu.memory_allocated(device))
+        return max(0, rsv - alloc)
+    except Exception:
+        return 0
+
+
+def _unpatched_get_free_memory(model_management):
+    fn = getattr(model_management, "get_free_memory", None)
+    while fn is not None and hasattr(fn, _GET_FREE_MEMORY_PATCH_MARKER):
+        fn = getattr(fn, _GET_FREE_MEMORY_PATCH_MARKER)
+    return fn
+
+
+def _is_aimdo_enabled(memory_management=None) -> bool:
+    if memory_management is not None:
+        return bool(getattr(memory_management, "aimdo_enabled", False))
+    mod = sys.modules.get("comfy.memory_management")
+    if mod is None:
+        try:
+            import comfy.memory_management as mod
+        except Exception:
+            mod = None
+    if mod is not None:
+        return bool(getattr(mod, "aimdo_enabled", False))
+    return _aimdo_model_vbar is not None
+
+
+def _xpu_actual_free_and_torch(
+    model_management, device, original_get_free=None, memory_management=None
+) -> tuple[int, int]:
+    """Return (free_total, free_torch_cached) for an XPU device without calling patched hooks."""
+    try:
+        free_device, total_device = torch.xpu.mem_get_info(device)
+        mem_free_torch = _reusable_torch_bytes(device)
+        total_free = max(0, int(free_device) + mem_free_torch)
+        if total_device and int(total_device) > 0:
+            total_free = min(total_free, int(total_device))
+        return total_free, mem_free_torch
+    except Exception:
+        pass
+
+    mem_free_torch = _reusable_torch_bytes(device)
+    unpatched = original_get_free or _unpatched_get_free_memory(model_management)
+    base_free = int(unpatched(device)) if callable(unpatched) else 0
+    total_vram = _device_total_vram(model_management, device)
+    if (
+        _is_aimdo_enabled(memory_management)
+        and _aimdo_model_vbar is not None
+        and hasattr(_aimdo_model_vbar, "vbars_analyze")
+    ):
+        try:
+            dev_idx = _device_index(device)
+            aimdo_used = max(0, int(_aimdo_model_vbar.vbars_analyze(dev_idx)))
+            free_est = max(0, base_free - aimdo_used)
+            if total_vram > 0:
+                free_est = min(free_est, total_vram)
+            return free_est, mem_free_torch
+        except Exception:
+            pass
+    free_est = max(0, base_free)
+    if total_vram > 0:
+        free_est = min(free_est, total_vram)
+    return free_est, mem_free_torch
+
+
+def _actual_free_vram(model_management, device) -> int:
+    """Return real free XPU VRAM including AIMDO VBAR allocations."""
+    if getattr(device, "type", None) != "xpu":
+        unpatched = _unpatched_get_free_memory(model_management)
+        return int(unpatched(device)) if callable(unpatched) else 0
+    total_free, _ = _xpu_actual_free_and_torch(model_management, device)
+    return total_free
 
 
 def _peak_torch_growth(device) -> int:
@@ -207,16 +362,67 @@ def _peak_torch_growth(device) -> int:
         return 0
 
 
-def _unloaded_dynamic_bytes(models, device) -> int:
-    total = 0
+def _model_unloaded_bytes(model, device) -> int:
+    size_fn = getattr(model, "model_size", None)
+    loaded_fn = getattr(model, "loaded_size", None)
+    size = max(0, int(size_fn())) if callable(size_fn) else 0
+    loaded = max(0, int(loaded_fn())) if callable(loaded_fn) else 0
+    curr_dev_fn = getattr(model, "current_loaded_device", None)
+    if callable(curr_dev_fn):
+        curr_dev = curr_dev_fn()
+        if (
+            curr_dev is None
+            or getattr(curr_dev, "type", None) == "cpu"
+            or not _same_device(curr_dev, device)
+        ):
+            return size
+    return max(0, size - loaded)
+
+
+def _unloaded_model_bytes(models, device) -> tuple[int, int]:
+    """Return (dynamic_bytes, non_dynamic_bytes) still unloaded on device."""
+    unloaded_dynamic = 0
+    unloaded_static = 0
     for model in models:
-        if not model.is_dynamic() or model.load_device != device:
+        if not _same_device(getattr(model, "load_device", None), device):
             continue
-        size = max(0, int(model.model_size()))
-        loaded = max(0, int(model.loaded_size()))
-        if size > loaded:
-            total += size - loaded
-    return total
+        unloaded = _model_unloaded_bytes(model, device)
+        if _is_dynamic_model(model):
+            unloaded_dynamic += unloaded
+        else:
+            unloaded_static += unloaded
+    return unloaded_dynamic, unloaded_static
+
+
+def _unloaded_dynamic_bytes(models, device) -> int:
+    unloaded_dynamic, _ = _unloaded_model_bytes(models, device)
+    return unloaded_dynamic
+
+
+def _flush_xpu_cache(model_management, device) -> bool:
+    """Release dead PyTorch XPU allocator segments for static VRAM consumers."""
+    flushed = False
+    soft_empty = getattr(model_management, "soft_empty_cache", None)
+    if callable(soft_empty):
+        soft_empty()
+        flushed = True
+    else:
+        empty_cache = getattr(torch.xpu, "empty_cache", None)
+        if callable(empty_cache):
+            sync = getattr(torch.xpu, "synchronize", None)
+            if callable(sync):
+                sync()
+            empty_cache()
+            flushed = True
+    if not flushed:
+        return False
+    publish = getattr(_aimdo_control, "publish_torch_cached_bytes", None)
+    if callable(publish):
+        try:
+            publish(_device_index(device), _reusable_torch_bytes(device))
+        except Exception:
+            pass
+    return True
 
 
 def _trim_pass(model_management, device, target, requested, include_requested):
@@ -224,7 +430,12 @@ def _trim_pass(model_management, device, target, requested, include_requested):
     trimmed = 0
     for loaded in reversed(model_management.current_loaded_models):
         model = loaded.model
-        if loaded.device != device or loaded.is_dead() or not model.is_dynamic():
+        if (
+            model is None
+            or not _same_device(loaded.device, device)
+            or loaded.is_dead()
+            or not _is_dynamic_model(model)
+        ):
             continue
         is_requested = id(model) in requested
         if is_requested != include_requested:
@@ -243,46 +454,146 @@ def _trim_pass(model_management, device, target, requested, include_requested):
     return reclaimed, trimmed
 
 
-def _trim_dynamic_boundary(model_management, models, target):
-    if not models or not all(model.is_dynamic() for model in models):
+def _trim_dynamic_boundary(
+    model_management,
+    models,
+    target,
+    extra_target=None,
+    *,
+    load_args=None,
+    load_kwargs=None,
+):
+    if not models:
+        return
+
+    all_dynamic = all(_is_dynamic_model(model) for model in models)
+    if not all_dynamic and not _non_dynamic_trim_enabled():
         return
 
     requested = {id(model) for model in models}
-    devices = {model.load_device for model in models}
-    for device in devices:
+    fit_trim = _fit_trim_enabled()
+    seen_xpu_indices = set()
+    for model in models:
+        device = getattr(model, "load_device", None)
         if getattr(device, "type", None) != "xpu":
             continue
+        dev_idx = _device_index(device)
+        if dev_idx in seen_xpu_indices:
+            continue
+        seen_xpu_indices.add(dev_idx)
+
+        device_models = [
+            m
+            for m in models
+            if _same_device(getattr(m, "load_device", None), device)
+        ]
+        device_has_non_dynamic = any(not _is_dynamic_model(m) for m in device_models)
+        total_vram = _device_total_vram(model_management, device)
+        base_target = int(target)
+        if total_vram > 0:
+            base_target = min(base_target, total_vram)
+        if device_has_non_dynamic:
+            dev_extra = extra_target
+            if load_args is not None:
+                dev_extra = _extra_memory_target(
+                    model_management,
+                    load_args,
+                    load_kwargs or {},
+                    device=device,
+                    non_dynamic=True,
+                )
+            if dev_extra is not None:
+                base_target = max(base_target, int(dev_extra))
+
+        unloaded_dynamic, unloaded_static = _unloaded_model_bytes(device_models, device)
+        # Mirror ComfyUI load_models_gpu (1.1x unloaded static weights + extra_mem).
+        static_budget = (unloaded_static * 11 + 9) // 10 if unloaded_static > 0 else 0
+        inactive_target = base_target + static_budget
+        if device_has_non_dynamic and total_vram > 0:
+            unscaled_base = int(target)
+            if load_args is not None:
+                unscaled_base = max(
+                    unscaled_base,
+                    _extra_memory_target(
+                        model_management,
+                        load_args,
+                        load_kwargs or {},
+                        device=device,
+                        non_dynamic=False,
+                    ),
+                )
+            non_dyn_cap = max(
+                min(unscaled_base + static_budget, total_vram),
+                int(total_vram * _DEFAULT_NON_DYNAMIC_MAX_TOTAL_FRACTION),
+            )
+            inactive_target = min(inactive_target, non_dyn_cap)
+        if fit_trim and unloaded_dynamic > 0:
+            inactive_target = max(
+                inactive_target,
+                base_target + static_budget + unloaded_dynamic + _peak_torch_growth(device),
+            )
+        active_target = base_target + static_budget
+        if total_vram > 0:
+            inactive_target = min(inactive_target, total_vram)
+            active_target = min(active_target, total_vram)
 
         free_before = _actual_free_vram(model_management, device)
-        inactive_target = int(target)
-        if _FIT_TRIM_ENABLED:
-            unloaded_req = _unloaded_dynamic_bytes(models, device)
-            if unloaded_req > 0:
-                inactive_target = max(
-                    inactive_target,
-                    int(target) + unloaded_req + _peak_torch_growth(device),
-                )
-        if free_before >= inactive_target:
+        reclaimed = 0
+        inactive_bytes = 0
+        inactive_models = 0
+        active_bytes = 0
+        active_models = 0
+
+        if free_before < inactive_target:
+            inactive_bytes, inactive_models = _trim_pass(
+                model_management, device, inactive_target, requested, False
+            )
+            active_bytes, active_models = _trim_pass(
+                model_management, device, active_target, requested, True
+            )
+            reclaimed = inactive_bytes + active_bytes
+
+        cache_flushed = False
+        if device_has_non_dynamic and (
+            reclaimed > 0
+            or _reusable_torch_bytes(device) > max(64 * _MIB, free_before * 0.25)
+        ):
+            cache_flushed = _flush_xpu_cache(model_management, device)
+
+        if free_before >= inactive_target and not cache_flushed:
             continue
 
-        inactive_bytes, inactive_models = _trim_pass(
-            model_management, device, inactive_target, requested, False
-        )
-        active_bytes, active_models = _trim_pass(
-            model_management, device, int(target), requested, True
-        )
         free_after = _actual_free_vram(model_management, device)
-        log.info(
-            "[OmniXPU] DynamicVRAM boundary trim: device=%s target=%.1fMiB "
-            "free=%.1f->%.1fMiB reclaimed=%.1fMiB models=%d inactive/%d active",
-            device,
-            inactive_target / (1024 ** 2),
-            free_before / (1024 ** 2),
-            free_after / (1024 ** 2),
-            (inactive_bytes + active_bytes) / (1024 ** 2),
-            inactive_models,
-            active_models,
-        )
+        extra_parts = []
+        if unloaded_static > 0:
+            extra_parts.append(f"static_unloaded={unloaded_static / _MIB:.1f}MiB")
+        if cache_flushed:
+            extra_parts.append("cache_flushed=1")
+        extra_text = (" " + " ".join(extra_parts)) if extra_parts else ""
+
+        if inactive_models > 0 or active_models > 0 or cache_flushed:
+            log.info(
+                "[OmniXPU] DynamicVRAM boundary trim: device=%s target=%.1fMiB "
+                "free=%.1f->%.1fMiB reclaimed=%.1fMiB models=%d inactive/%d active%s",
+                device,
+                inactive_target / _MIB,
+                free_before / _MIB,
+                free_after / _MIB,
+                reclaimed / _MIB,
+                inactive_models,
+                active_models,
+                extra_text,
+            )
+        else:
+            log.debug(
+                "[OmniXPU] DynamicVRAM boundary trim: device=%s target=%.1fMiB "
+                "free=%.1f->%.1fMiB reclaimed=0.0MiB models=0 inactive/0 active%s",
+                device,
+                inactive_target / _MIB,
+                free_before / _MIB,
+                free_after / _MIB,
+                extra_text,
+            )
 
 
 def _is_flash_attention_active(model_management):
@@ -326,6 +637,28 @@ def _with_minimum_memory_required(args, kwargs, minimum_value):
     return tuple(new_args), new_kwargs
 
 
+def _calibration_knee_and_cap(model_management, xpu_devices, max_fraction):
+    raw_knee_env = os.environ.get("OMNIXPU_AIMDO_BUDGET_KNEE_MIB")
+    knee_bytes = (
+        _env_int("OMNIXPU_AIMDO_BUDGET_KNEE_MIB", _DEFAULT_BUDGET_KNEE_MIB, 512)
+        * _MIB
+    )
+    totals = [
+        t
+        for t in (_device_total_vram(model_management, dev) for dev in xpu_devices)
+        if t > 0
+    ]
+    if not totals:
+        return knee_bytes, None
+    min_total = min(totals)
+    cap = int(min_total * max_fraction)
+    if raw_knee_env is None:
+        effective_knee = min(knee_bytes, int(min_total * 0.25), cap)
+    else:
+        effective_knee = min(knee_bytes, cap)
+    return effective_knee, cap
+
+
 def _calibrate_inference_budget(model_management, expanded, args, kwargs):
     raw_min_arg = _load_argument(args, kwargs, "minimum_memory_required", 2, None)
     raw_budget = _inference_memory_budget(args, kwargs)
@@ -334,7 +667,7 @@ def _calibrate_inference_budget(model_management, expanded, args, kwargs):
         or raw_min_arg is None
         or isinstance(raw_min_arg, bool)
         or not expanded
-        or not all(model.is_dynamic() for model in expanded)
+        or not all(_is_dynamic_model(model) for model in expanded)
         or not _is_flash_attention_active(model_management)
     ):
         return args, kwargs, raw_budget, raw_budget, False
@@ -347,26 +680,23 @@ def _calibrate_inference_budget(model_management, expanded, args, kwargs):
     if not xpu_devices:
         return args, kwargs, raw_budget, raw_budget, False
 
-    knee_bytes = _env_int("OMNIXPU_AIMDO_BUDGET_KNEE_MIB", _DEFAULT_BUDGET_KNEE_MIB, 512) * _MIB
-    if raw_budget <= knee_bytes:
+    max_fraction = _env_float(
+        "OMNIXPU_AIMDO_BUDGET_MAX_FRACTION", _DEFAULT_BUDGET_MAX_FRACTION, 0.1, 1.0
+    )
+    effective_knee, cap = _calibration_knee_and_cap(
+        model_management, xpu_devices, max_fraction
+    )
+    if raw_budget <= effective_knee:
         return args, kwargs, raw_budget, raw_budget, False
 
     excess_scale = _env_float(
         "OMNIXPU_AIMDO_BUDGET_EXCESS_SCALE", _DEFAULT_BUDGET_EXCESS_SCALE, 0.0, 1.0
     )
-    max_fraction = _env_float(
-        "OMNIXPU_AIMDO_BUDGET_MAX_FRACTION", _DEFAULT_BUDGET_MAX_FRACTION, 0.1, 1.0
-    )
-    calibrated = knee_bytes + int((raw_budget - knee_bytes) * excess_scale)
-
-    totals = [
-        t for t in (_device_total_vram(model_management, dev) for dev in xpu_devices) if t > 0
-    ]
-    if totals:
-        cap = max(knee_bytes, int(min(totals) * max_fraction))
+    calibrated = effective_knee + int((raw_budget - effective_knee) * excess_scale)
+    if cap is not None:
         calibrated = min(calibrated, cap)
 
-    calibrated = max(knee_bytes, min(raw_budget, calibrated))
+    calibrated = max(effective_knee, min(raw_budget, calibrated))
     if calibrated >= raw_budget:
         return args, kwargs, raw_budget, raw_budget, False
 
@@ -388,7 +718,7 @@ def _xpu_vram_telemetry(device):
         return None
     if _aimdo_model_vbar is not None and hasattr(_aimdo_model_vbar, "vbars_analyze"):
         try:
-            dev_idx = 0 if device.index is None else int(device.index)
+            dev_idx = _device_index(device)
             stats["vbar"] = int(_aimdo_model_vbar.vbars_analyze(dev_idx))
         except Exception:
             stats["vbar"] = -1
@@ -403,7 +733,7 @@ def _log_boundary_telemetry(expanded, raw_budget, calibrated_budget):
         device = model.load_device
         if getattr(device, "type", None) != "xpu":
             continue
-        dev_idx = 0 if device.index is None else int(device.index)
+        dev_idx = _device_index(device)
         if dev_idx in seen_idx:
             continue
         seen_idx.add(dev_idx)
@@ -435,8 +765,21 @@ def _prepare_boundary(model_management, models, args, kwargs):
         cal_args, cal_kwargs, raw_budget, inference_budget, was_calibrated = (
             _calibrate_inference_budget(model_management, expanded, args, kwargs)
         )
+        xpu_devs = [
+            m.load_device
+            for m in expanded
+            if getattr(getattr(m, "load_device", None), "type", None) == "xpu"
+        ]
         if was_calibrated:
-            knee = _env_int("OMNIXPU_AIMDO_BUDGET_KNEE_MIB", _DEFAULT_BUDGET_KNEE_MIB, 512)
+            max_fraction = _env_float(
+                "OMNIXPU_AIMDO_BUDGET_MAX_FRACTION",
+                _DEFAULT_BUDGET_MAX_FRACTION,
+                0.1,
+                1.0,
+            )
+            effective_knee, _ = _calibration_knee_and_cap(
+                model_management, xpu_devs, max_fraction
+            )
             scale = _env_float(
                 "OMNIXPU_AIMDO_BUDGET_EXCESS_SCALE", _DEFAULT_BUDGET_EXCESS_SCALE, 0.0, 1.0
             )
@@ -445,12 +788,25 @@ def _prepare_boundary(model_management, models, args, kwargs):
                 "raw=%.1fMiB -> %.1fMiB (knee=%dMiB scale=%.2f)",
                 raw_budget / _MIB,
                 inference_budget / _MIB,
-                knee,
+                effective_knee // _MIB,
                 scale,
             )
         _log_boundary_telemetry(expanded, raw_budget, inference_budget)
-        target = _minimum_memory_target(model_management, cal_args, cal_kwargs)
-        _trim_dynamic_boundary(model_management, expanded, target)
+        single_xpu_dev = (
+            xpu_devs[0]
+            if xpu_devs and len({_device_index(d) for d in xpu_devs}) == 1
+            else None
+        )
+        target = _minimum_memory_target(
+            model_management, cal_args, cal_kwargs, device=single_xpu_dev
+        )
+        _trim_dynamic_boundary(
+            model_management,
+            expanded,
+            target,
+            load_args=cal_args,
+            load_kwargs=cal_kwargs,
+        )
         budget_scope, budget_devices = _aimdo_budget_scope(
             expanded, inference_budget
         )
@@ -493,9 +849,18 @@ def _fault_device_index(alloc):
     return 0
 
 
+def _trim_state_for_device(dev_idx: int) -> dict:
+    return _TRIM_STATE.setdefault(
+        dev_idx,
+        {"last_attempt": 0.0, "last_unmap": 0, "calls": 0, "freed": 0},
+    )
+
+
 def _maybe_trim_torch_cache(alloc):
     if not _torch_cache_trim_enabled():
         return 0
+    dev_idx = _fault_device_index(alloc)
+    state = _trim_state_for_device(dev_idx)
     now = time.monotonic()
     interval = _env_float(
         "OMNIXPU_TORCH_CACHE_TRIM_INTERVAL_S",
@@ -503,11 +868,10 @@ def _maybe_trim_torch_cache(alloc):
         0.2,
         60.0,
     )
-    if (now - _TRIM_STATE["last_attempt"]) < interval:
+    if (now - state["last_attempt"]) < interval:
         return 0
-    _TRIM_STATE["last_attempt"] = now
+    state["last_attempt"] = now
 
-    dev_idx = _fault_device_index(alloc)
     try:
         rsv = int(torch.xpu.memory_reserved(dev_idx))
         alloc_b = int(torch.xpu.memory_allocated(dev_idx))
@@ -525,18 +889,40 @@ def _maybe_trim_torch_cache(alloc):
     cur_vmm = _xpu_vmm_snapshot()
     if cur_vmm is not None:
         unmap_bytes = int(cur_vmm.get("unmap_bytes", 0))
-        if unmap_bytes > _TRIM_STATE["last_unmap"]:
+        if unmap_bytes > state["last_unmap"]:
             pressure = True
-        _TRIM_STATE["last_unmap"] = unmap_bytes
+        state["last_unmap"] = unmap_bytes
 
     if not pressure:
-        free_threshold = _env_int(
-            "OMNIXPU_TORCH_CACHE_TRIM_FREE_MIB", _DEFAULT_TORCH_CACHE_TRIM_FREE_MIB, 256
-        ) * _MIB
+        env_free_mib = os.environ.get("OMNIXPU_TORCH_CACHE_TRIM_FREE_MIB")
+        configured_free_bytes = (
+            _env_int(
+                "OMNIXPU_TORCH_CACHE_TRIM_FREE_MIB",
+                _DEFAULT_TORCH_CACHE_TRIM_FREE_MIB,
+                256,
+            )
+            * _MIB
+        )
         try:
-            free_bytes = int(torch.xpu.mem_get_info(dev_idx)[0])
+            free_bytes, total_vram = torch.xpu.mem_get_info(dev_idx)
+            free_bytes = int(free_bytes)
+            total_vram = int(total_vram)
         except Exception:
-            free_bytes = free_threshold + 1
+            free_bytes = configured_free_bytes + 1
+            total_vram = 0
+
+        free_threshold = configured_free_bytes
+        if total_vram > 0:
+            if env_free_mib is not None:
+                free_threshold = min(configured_free_bytes, total_vram)
+            else:
+                free_threshold = min(
+                    total_vram,
+                    max(
+                        256 * _MIB,
+                        min(configured_free_bytes, int(total_vram * 0.15)),
+                    ),
+                )
         pressure = free_bytes <= free_threshold
 
     if not pressure:
@@ -552,11 +938,11 @@ def _maybe_trim_torch_cache(alloc):
     except Exception:
         return 0
     finally:
-        _TRIM_STATE["last_attempt"] = time.monotonic()
+        state["last_attempt"] = time.monotonic()
 
     freed = max(0, rsv - after_rsv)
-    _TRIM_STATE["calls"] += 1
-    _TRIM_STATE["freed"] += freed
+    state["calls"] += 1
+    state["freed"] += freed
     return freed
 
 
@@ -634,10 +1020,12 @@ def _wrap_step_callback(patcher, callback):
     if vbar is None:
         return callback
 
+    dev_idx = _device_index(device)
+    trim_state = _trim_state_for_device(dev_idx)
     fault_traced = _ensure_fault_tracer()
     t_last = [time.perf_counter()]
     prev_faults = [dict(_FAULT_COUNTS)]
-    prev_trim = {"calls": _TRIM_STATE["calls"], "freed": _TRIM_STATE["freed"]}
+    prev_trim = {"calls": trim_state["calls"], "freed": trim_state["freed"]}
     prev_vmm = [_xpu_vmm_snapshot()]
     prev_hook = [_xpu_ur_hook_snapshot()]
 
@@ -689,11 +1077,11 @@ def _wrap_step_callback(patcher, callback):
                 f"hook=dir:{dir_p}({dir_mib:.0f}MiB),syn_oom:{syn_oom},rt_oom:{rt_oom},retry:{retry_ev},skip:{skip}"
             )
         prev_hook[0] = cur_hook
-        if _TRIM_STATE["calls"] > prev_trim["calls"] or _torch_cache_trim_enabled():
-            tc = _TRIM_STATE["calls"] - prev_trim["calls"]
-            tf_mib = (_TRIM_STATE["freed"] - prev_trim["freed"]) / _MIB
-            prev_trim["calls"] = _TRIM_STATE["calls"]
-            prev_trim["freed"] = _TRIM_STATE["freed"]
+        if trim_state["calls"] > prev_trim["calls"] or _torch_cache_trim_enabled():
+            tc = trim_state["calls"] - prev_trim["calls"]
+            tf_mib = (trim_state["freed"] - prev_trim["freed"]) / _MIB
+            prev_trim["calls"] = trim_state["calls"]
+            prev_trim["freed"] = trim_state["freed"]
             extra_parts.append(f"trim={tc}({tf_mib:.0f}MiB)")
         extra = (" " + " ".join(extra_parts)) if extra_parts else ""
 
@@ -758,6 +1146,93 @@ def _patch_cfg_guider_steps():
     return True
 
 
+def _patch_get_free_memory(model_management, memory_management=None):
+    original = getattr(model_management, "get_free_memory", None)
+    if original is None or hasattr(original, _GET_FREE_MEMORY_PATCH_MARKER):
+        return False
+
+    @functools.wraps(original)
+    def xpu_get_free_memory(dev=None, torch_free_too=False):
+        if not _get_free_memory_patch_enabled():
+            return (
+                original(dev, torch_free_too=True)
+                if torch_free_too
+                else original(dev)
+            )
+        target_dev = dev
+        if target_dev is None:
+            getter = getattr(model_management, "get_torch_device", None)
+            if callable(getter):
+                target_dev = getter()
+        if getattr(target_dev, "type", None) != "xpu":
+            return (
+                original(dev, torch_free_too=True)
+                if torch_free_too
+                else original(dev)
+            )
+        total_free, torch_free = _xpu_actual_free_and_torch(
+            model_management,
+            target_dev,
+            original_get_free=original,
+            memory_management=memory_management,
+        )
+        total_free = max(0, total_free)
+        torch_free = max(0, torch_free)
+        total_vram = _device_total_vram(model_management, target_dev)
+        if total_vram > 0:
+            total_free = min(total_free, total_vram)
+            torch_free = min(torch_free, total_free)
+        if torch_free_too:
+            return (total_free, torch_free)
+        return total_free
+
+    setattr(xpu_get_free_memory, _GET_FREE_MEMORY_PATCH_MARKER, original)
+    model_management.get_free_memory = xpu_get_free_memory
+    return True
+
+
+def _patch_model_patcher_get_free_memory(
+    model_patcher_cls, model_management, memory_management=None
+):
+    original = getattr(model_patcher_cls, "get_free_memory", None)
+    if original is None or hasattr(original, _MP_GET_FREE_MEMORY_PATCH_MARKER):
+        return False
+
+    @functools.wraps(original)
+    def xpu_mp_get_free_memory(self, device):
+        if not _get_free_memory_patch_enabled():
+            return original(self, device)
+
+        dev_type = getattr(device, "type", None)
+        if dev_type == "cpu":
+            return int(model_management.get_free_memory(device))
+        if dev_type != "xpu":
+            return original(self, device)
+
+        aimdo_mem = 0
+        aimdo_enabled = bool(getattr(memory_management, "aimdo_enabled", False))
+        if (
+            aimdo_enabled
+            and _aimdo_model_vbar is not None
+            and hasattr(_aimdo_model_vbar, "vbars_analyze")
+        ):
+            try:
+                aimdo_mem = max(
+                    0, int(_aimdo_model_vbar.vbars_analyze(_device_index(device)))
+                )
+            except Exception:
+                aimdo_mem = 0
+        result = max(0, int(model_management.get_free_memory(device)) + aimdo_mem)
+        total_vram = _device_total_vram(model_management, device)
+        if total_vram > 0:
+            result = min(result, total_vram)
+        return result
+
+    setattr(xpu_mp_get_free_memory, _MP_GET_FREE_MEMORY_PATCH_MARKER, original)
+    model_patcher_cls.get_free_memory = xpu_mp_get_free_memory
+    return True
+
+
 def _patch_model_loader(model_management):
     original = model_management.load_models_gpu
     if hasattr(original, _PATCH_MARKER):
@@ -793,6 +1268,26 @@ def apply():
         return False, "missing ComfyUI hooks: " + ", ".join(missing)
 
     _patch_model_loader(comfy.model_management)
+    if _get_free_memory_patch_enabled():
+        try:
+            import comfy.memory_management as comfy_memory_management
+        except Exception:
+            comfy_memory_management = None
+        _patch_get_free_memory(
+            comfy.model_management, memory_management=comfy_memory_management
+        )
+        try:
+            import comfy.model_patcher as comfy_model_patcher
+
+            mp_cls = getattr(comfy_model_patcher, "ModelPatcher", None)
+            if mp_cls is not None and hasattr(mp_cls, "get_free_memory"):
+                _patch_model_patcher_get_free_memory(
+                    mp_cls, comfy.model_management, comfy_memory_management
+                )
+        except Exception as exc:
+            log.debug(
+                "[OmniXPU] ModelPatcher.get_free_memory patch skipped: %s", exc
+            )
     _patch_cfg_guider_steps()
     if _torch_cache_trim_enabled() or _step_trace_enabled():
         _ensure_fault_tracer()

@@ -149,6 +149,13 @@ COMPONENTS = (
         "fixes/seedvr_ada.py",
     ),
     Component(
+        "te_long_sdpa_bf16_patch",
+        "te_long_sdpa_bf16",
+        "compatibility_patch",
+        "upstream_pending",
+        "fixes/te_long_sdpa_bf16.py",
+    ),
+    Component(
         "seedvr_capacity_adapter",
         "seedvr_capacity",
         "adapter",
@@ -182,6 +189,13 @@ COMPONENTS = (
         "adapter",
         "ComfyUI-OmniXPU",
         "adapters/custom_nodes_xpu.py",
+    ),
+    Component(
+        "qsv_video_encode_adapter",
+        "qsv_video_encode",
+        "adapter",
+        "ComfyUI-OmniXPU",
+        "adapters/video_encode.py",
     ),
 )
 

@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-intel-arc-xpu"
-description = "MANDATORY: Read the full README at https://github.com/wildersa/ComfyUI-Intel-Arc-XPU before using. Installing via Comfy Registry alone is incomplete — this extension only works properly with Python 3.13 + torch==2.13.0+xpu, the extra native Windows XPU wheel setup step (.\\install.ps1 / install.py), and --enable-dynamic-vram --reserve-vram 1 (or 2 with display)."
-version = "0.2.6"
+description = "MANDATORY: Read the full README at https://github.com/wildersa/ComfyUI-Intel-Arc-XPU before using. New Comfy Registry installs require a one-time native Windows XPU wheel setup (.\\install.ps1 / install.py on Python 3.13 + torch==2.13.0+xpu) and --enable-dynamic-vram --reserve-vram 1 (or 2 with display). Updating from v0.2.x only requires updating this node and restarting ComfyUI — no wheel reinstall needed."
+version = "0.2.7"
 requires-python = ">=3.13,<3.14"
 license = { file = "LICENSE" }
 dependencies = []

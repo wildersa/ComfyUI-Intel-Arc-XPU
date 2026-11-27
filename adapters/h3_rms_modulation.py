@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import weakref
 from functools import wraps
 from typing import Any, Callable
 
@@ -22,6 +23,82 @@ _omni_norm = None
 _routed_calls = 0
 _fallback_calls = 0
 _fallback_reasons: dict[str, int] = {}
+_collapsed_tensor_runs_cache: dict[tuple[int, int, int], tuple[Any, int, list[tuple[int, int, int]] | None]] = {}
+
+
+def _collapse_tensor_segment(start: int, stop: int, row: Any) -> list[tuple[int, int, int]] | None:
+    """Collapse a 1D per-token integer index tensor into contiguous scalar runs."""
+    if not isinstance(row, torch.Tensor):
+        return None
+    if row.ndim != 1 or row.numel() != (stop - start) or row.requires_grad:
+        return None
+    if row.dtype not in (torch.int64, torch.int32, torch.int16, torch.int8, torch.uint8):
+        return None
+    if row.numel() == 0:
+        return []
+    is_inference_fn = getattr(row, "is_inference", None)
+    is_inference = bool(is_inference_fn()) if callable(is_inference_fn) else False
+    if is_inference:
+        # Inference tensors are immutable and raise RuntimeError if _version is read.
+        version = -1
+    else:
+        try:
+            version = int(getattr(row, "_version", 0))
+        except RuntimeError:
+            version = -1
+    cache_key = (id(row), int(start), int(stop))
+    cached = _collapsed_tensor_runs_cache.get(cache_key)
+    if cached is not None and cached[0]() is row and cached[1] == version:
+        return cached[2]
+
+    vals, counts = torch.unique_consecutive(row, return_counts=True)
+    if int(vals.numel()) > 32:
+        runs_result: list[tuple[int, int, int]] | None = None
+    else:
+        values = vals.tolist()
+        lengths = counts.tolist()
+        runs: list[tuple[int, int, int]] = []
+        cursor = int(start)
+        for value, count in zip(values, lengths):
+            next_cursor = cursor + int(count)
+            runs.append((cursor, next_cursor, int(value)))
+            cursor = next_cursor
+        runs_result = runs
+    if len(_collapsed_tensor_runs_cache) >= 32:
+        _collapsed_tensor_runs_cache.clear()
+    _collapsed_tensor_runs_cache[cache_key] = (weakref.ref(row), version, runs_result)
+    return runs_result
+
+
+def _collapse_mod_segments(segments: Any) -> Any:
+    """Replace 1D per-token index tensors in mod_segments with contiguous int runs."""
+    if not isinstance(segments, (tuple, list)):
+        return segments
+    if not any(
+        isinstance(segment, (tuple, list))
+        and len(segment) == 3
+        and isinstance(segment[2], torch.Tensor)
+        for segment in segments
+    ):
+        return segments
+
+    collapsed: list[Any] = []
+    for segment in segments:
+        if (
+            isinstance(segment, (tuple, list))
+            and len(segment) == 3
+            and type(segment[0]) is int
+            and type(segment[1]) is int
+            and isinstance(segment[2], torch.Tensor)
+        ):
+            runs = _collapse_tensor_segment(segment[0], segment[1], segment[2])
+            if runs is None:
+                collapsed.append(segment)
+            else:
+                collapsed.extend(runs)
+        else:
+            collapsed.append(segment)
+    return collapsed
 
 
 def _record_fallback(reason: str) -> None:
@@ -303,21 +380,26 @@ def apply():
                 **attention_kwargs,
             )
 
-        reason = _block_input_reason(self, x, mod_segments)
+        effective_segments = (
+            mod_segments
+            if torch.compiler.is_compiling()
+            else _collapse_mod_segments(mod_segments)
+        )
+        reason = _block_input_reason(self, x, effective_segments)
         if reason or comfy.model_management.in_training:
             _record_fallback(reason or "training")
             return original(
                 self,
                 x,
                 t_emb,
-                mod_segments,
+                effective_segments,
                 rope_freqs,
                 transformer_options=transformer_options,
                 **attention_kwargs,
             )
 
         modulation = self.adaln_proj(t_emb)
-        reason = _modulation_reason(modulation, x, mod_segments)
+        reason = _modulation_reason(modulation, x, effective_segments)
         (
             shift_msa,
             scale_msa,
@@ -334,7 +416,7 @@ def apply():
             x,
             scale_msa,
             shift_msa,
-            mod_segments,
+            effective_segments,
             reason,
         )
 
@@ -346,7 +428,7 @@ def apply():
                 rope_freqs=rope_freqs,
                 transformer_options=transformer_options,
             ),
-            mod_segments,
+            effective_segments,
         )
         h, second_fused = _rms_modulation(
             comfy_ops,
@@ -355,14 +437,14 @@ def apply():
             x,
             scale_mlp,
             shift_mlp,
-            mod_segments,
+            effective_segments,
             reason,
         )
         output = h3_model._mod_gate(
             x,
             gate_mlp,
             self.mlp(h),
-            mod_segments,
+            effective_segments,
         )
 
         fused_calls = first_fused + second_fused
@@ -373,7 +455,7 @@ def apply():
                 {"input": x, "output": output},
                 details={
                     "backend": "bmg_sycl",
-                    "segments": len(mod_segments),
+                    "segments": len(effective_segments),
                     "fused_calls": fused_calls,
                 },
             )

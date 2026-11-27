@@ -2,6 +2,19 @@
 
 All notable changes to **ComfyUI-Intel-Arc-XPU** are documented in this file.
 
+## [0.2.7] - 2026-11-27
+
+### Added
+- **Non-dynamic transition VBAR trim & XPU `get_free_memory` accounting (`adapters/dynamic_vram.py`, `config.py`):** reclaims inactive DynamicVRAM residency explicitly before loading non-dynamic models (e.g. LTX-2.5 `CausalDiffusionVAE`), preventing Windows deferred VBAR reclaim from causing WDDM spillover, and fixes XPU `get_free_memory` / `ModelPatcher.get_free_memory` VBAR accounting (`OMNIXPU_DYNAMIC_VRAM_NON_DYNAMIC_TRIM=1`, `OMNIXPU_DYNAMIC_VRAM_GET_FREE_MEMORY=1`).
+- **Intel Quick Sync `h264_qsv` SaveVideo adapter (`adapters/video_encode.py`, `config.py`):** routes eligible 8-bit 4:2:0 H.264 `SaveVideo` encodes to `h264_qsv` with probe validation and automatic CPU `libx264` fallback (`OMNIXPU_QSV_VIDEO_ENCODE=1`).
+- **Long float32 text-encoder SDPA BF16 route (`fixes/te_long_sdpa_bf16.py`, `config.py`):** keeps long float32 Llama/Qwen3VL text-encoder SDPA on XPU `SDPBackend.OVERRIDEABLE` (`bfloat16`) to avoid quadratic `MATH` fallback (`OMNIXPU_TE_LONG_SDPA_BF16=1`).
+- **MiniMax H3 CUTE D128 Q-chunking & segment collapse (`adapters/attention.py`, `adapters/h3_rms_modulation.py`):** chunks long `heads=56` CUTE D128 attention queries to stay well below Windows WDDM TDR limits (`OMNIXPU_H3_CUTE_Q_CHUNK=1`) and collapses contiguous 1D token-index tensors in segmented RMS modulation.
+
+### Changed
+- **Multi-SKU DynamicVRAM safety (`8 / 12 B580 / 16 B50 / 24 B60 / 32 B70 GiB`):** scaled the default budget calibration knee and reactive `torch_cache_trim` free threshold proportionally for smaller VRAM cards, isolated per-device trim state, enforced `[0, total_vram]` upper/lower clamps across memory targets and `get_free_memory`, gated fallback VBAR subtraction on `aimdo_enabled`, and passed `model.load_device` to `_xpu_snapshot` in `adapters/lora_memory.py`.
+- Updated `pyproject.toml` to `0.2.7` and clarified that updating from `v0.2.x` only requires updating the node and restarting ComfyUI (no wheel reinstall needed).
+- Expanded `tests/test_extension_contracts.py` to 19 CPU-only contract tests covering multi-SKU math, non-dynamic transitions, QSV encode fallback, TE long SDPA, and H3 Q-chunking.
+
 ## [0.2.6] - 2026-11-22
 
 ### Changed

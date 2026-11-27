@@ -440,6 +440,14 @@ def _patch_lora_loader(comfy_sd):
     comfy_sd.load_lora_for_models = budgeted
 
 
+def _first_xpu_device(models):
+    for patcher in _iter_model_patchers(models):
+        device = getattr(patcher, "load_device", None)
+        if getattr(device, "type", None) == "xpu":
+            return device
+    return None
+
+
 def _patch_model_loader(model_management):
     original = model_management.load_models_gpu
     if hasattr(original, _PATCH_MARKER):
@@ -463,7 +471,8 @@ def _patch_model_loader(model_management):
         ) = _add_budget_to_load_args(
             args, kwargs, budget, min_budget=min_budget
         )
-        before = _xpu_snapshot()
+        snapshot_device = _first_xpu_device(models)
+        before = _xpu_snapshot(snapshot_device)
         log.info(
             "[OmniXPU] LoRA model budget applied: cached=%.1fMiB/%d tensors "
             "min_budget=%.1fMiB(peak=%.1fMiB) "
@@ -483,12 +492,12 @@ def _patch_model_loader(model_management):
             log.exception(
                 "[OmniXPU] LoRA model load failed: cached_budget=%.1fMiB %s",
                 _mib(budget),
-                _snapshot_text(_xpu_snapshot()),
+                _snapshot_text(_xpu_snapshot(snapshot_device)),
             )
             raise
         log.info(
             "[OmniXPU] LoRA model load complete: %s",
-            _snapshot_text(_xpu_snapshot()),
+            _snapshot_text(_xpu_snapshot(snapshot_device)),
         )
         return result
 

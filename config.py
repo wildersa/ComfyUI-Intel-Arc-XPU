@@ -63,6 +63,14 @@ class Config:
             self.dynamic_vram_boundary_trim
             and os.environ.get("OMNIXPU_DYNAMIC_VRAM_FIT_TRIM", "1") != "0"
         )
+        self.dynamic_vram_non_dynamic_trim = (
+            self.dynamic_vram_boundary_trim
+            and os.environ.get("OMNIXPU_DYNAMIC_VRAM_NON_DYNAMIC_TRIM", "1") != "0"
+        )
+        self.dynamic_vram_get_free_memory = (
+            self.dynamic_vram_boundary_trim
+            and os.environ.get("OMNIXPU_DYNAMIC_VRAM_GET_FREE_MEMORY", "1") != "0"
+        )
         self.dynamic_vram_budget_calibration = (
             self.dynamic_vram_boundary_trim
             and os.environ.get("OMNIXPU_DYNAMIC_VRAM_BUDGET_CALIBRATION", "1") != "0"
@@ -94,6 +102,15 @@ class Config:
         )
         self.custom_nodes_xpu = (
             master and os.environ.get("OMNIXPU_CUSTOM_NODES_XPU", "1") != "0"
+        )
+        self.te_long_sdpa_bf16 = (
+            master and os.environ.get("OMNIXPU_TE_LONG_SDPA_BF16", "1") != "0"
+        )
+        self.h3_cute_q_chunk = (
+            master and os.environ.get("OMNIXPU_H3_CUTE_Q_CHUNK", "1") != "0"
+        )
+        self.qsv_video_encode = (
+            master and os.environ.get("OMNIXPU_QSV_VIDEO_ENCODE", "1") != "0"
         )
 
 
