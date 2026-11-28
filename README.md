@@ -1,27 +1,44 @@
 # ComfyUI-Intel-Arc-XPU
 
+**Plug-and-play GPU acceleration and smart VRAM/RAM memory management for ComfyUI on Intel Arc graphics cards (Windows).**
+
+`ComfyUI-Intel-Arc-XPU` is a standard ComfyUI custom-node extension (**zero core ComfyUI files modified**) packaged with prebuilt Windows Intel GPU runtimes (`omni_xpu_kernel`, `comfy-kitchen` XPU backend, and Intel `CUTE` attention), Windows `DynamicVRAM` (`comfy-aimdo` XPU support), model-specific adapters, and an `OmniXPU Status` diagnostic node—with no manual compiling required. *(Note: **"XPU"** is simply Intel's name for GPU acceleration in PyTorch, just like **CUDA** is for NVIDIA.)*
+
+### What it solves
+Out of the box, ComfyUI on Windows ships without Intel's native compute kernels or `DynamicVRAM` host-RAM weight staging—so heavy workflows either fall back to slow emulation or crash with `out of memory`. Installing `ComfyUI-Intel-Arc-XPU` gives you:
+- **Much faster generation (up to ~3×–12× speedups in tested workflows):** runs native Intel Arc kernels (`SDP`, norms, rotary, `INT8`, `ConvRot`, `W4A8`, `FP8`, and optional `CUTE` FMHA) instead of generic fallbacks.
+- **Run large image & video models without Out-of-Memory crashes:** enables Windows `DynamicVRAM` with host-RAM weight staging so `~20 GB` class models (`LTX-2.5`, `WAN 2.2`, `MiniMax H3`, `FLUX`, `Qwen Image`) stay usable without OOM.
+- **Non-invasive drop-in safety:** automatically disables itself cleanly if Python/PyTorch versions don't match (`CONFLICT:` guard) and falls back cleanly across ComfyUI updates.
+
 > [!IMPORTANT]
-> **Experimental Windows Intel XPU extension — limited hardware validation scope**
->
-> This packaging and its Windows XPU adapters are developed and hardware-validated primarily on **Windows 11 x64** with **Intel Arc Pro B70 (`32 GB`, Battlemage / `bmg`)** running **Python `3.13`** and **`torch==2.13.0+xpu`**.
->
-> Other GPU SKUs (such as `B580`, `B50`, `B60`, Alchemist, or iGPUs), operating systems, driver/PyTorch/ComfyUI versions, and workloads are outside the hardware-validated scope. While defensive multi-SKU memory guards and unit tests are included, compatibility, correctness, output quality, stability, and performance outside the validated setup are not guaranteed.
->
-> If you hit an issue or have a requirement outside the current scope, feel free to open an issue with your full environment, GPU/driver versions, and a reproducible example. This work is experimental; ongoing maintenance and updates depend on available time, capacity, and upstream Intel XPU releases.
-
-**The problem:** Out of the box, ComfyUI on Windows does **not** ship native **Intel Arc (`xpu`)** compute kernels, an XPU backend for `comfy-kitchen`, Windows `DynamicVRAM` (`comfy-aimdo` XPU overlay), or Intel XPU model adapters. Even with PyTorch XPU installed, stock ComfyUI falls back to generic PyTorch paths, slow weight emulation, and static VRAM allocation — causing multi-minute stalls or `XPU out of memory` on large image and video models.
-
-**What this extension solves:** `ComfyUI-Intel-Arc-XPU` brings native **Intel Arc Battlemage (`bmg` / Arc Pro B70)** acceleration to **ComfyUI on Windows** as a drop-in custom node extension (**zero core ComfyUI files modified**):
-- Bundled **Windows XPU native kernels** (`omni_xpu_kernel`: SDP/attention, norms, rotary, INT8, FP8, layout) and `comfy-kitchen` XPU backend (`INT8`, `ConvRot`, `W4A8`, `FP8`).
-- **Windows `DynamicVRAM`** (`comfy-aimdo-xpu-runtime`) with host RAM weight staging so large models (`LTX-2.5`, `WAN`, `MiniMax H3`, `FLUX`, `Qwen`) run without OOM.
-- **Model adapters & `CUTE` FMHA attention routing** from `ComfyUI-OmniXPU`, plus diagnostics (`OmniXPU Status`) and clean fallbacks if ComfyUI updates.
+> **Hardware & Compatibility Scope (Experimental):** Developed and hardware-validated primarily on **Windows 11 x64** with **Intel Arc Pro B70 (`32 GB`, Battlemage / `bmg`)** running **Python `3.13`** and **`torch==2.13.0+xpu`**. Other Intel Arc cards (`B580`, `B50`, `B60`, Alchemist, or iGPUs) and other versions include defensive multi-GPU memory guards, but are not hardware-validated here—stability and speed outside the tested setup are not guaranteed. If you hit an issue, feel free to open a GitHub issue with your GPU/driver/PyTorch versions and a reproducible example.
 
 > [!NOTE]
-> **Your workflow also matters:** even with XPU and native kernels installed, a workflow must use **Intel XPU-compatible nodes, attention routes, and weights** (rather than CUDA-only custom nodes or emulated `fp8` defaults) to actually execute on these kernels. See **[Section 5 — Workflow Compatibility](#5-workflow-compatibility-using-the-xpu-kernels)** and [`WORKFLOW_COMPATIBILITY.md`](./WORKFLOW_COMPATIBILITY.md).
+> **Your workflow also matters:** even with acceleration installed, workflows imported from NVIDIA setups should avoid CUDA-only custom nodes or NVIDIA-specific `fp8` defaults so they actually use the fast Intel GPU path. See **[Section 6 — Workflow Compatibility](#6-workflow-compatibility-using-the-xpu-kernels)** and [`WORKFLOW_COMPATIBILITY.md`](./WORKFLOW_COMPATIBILITY.md).
 
 ---
 
-## 1. Prerequisite (Required)
+## 1. Benchmarks & Telemetry
+
+Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** comparing **Stock ComfyUI (OOTB)** (out-of-the-box, no extension, `DynamicVRAM` off) against **`ComfyUI-Intel-Arc-XPU`** (`--enable-dynamic-vram`):
+
+| Model | Config | Stock ComfyUI (OOTB) | With Extension (`torch`) | With Extension (`cute`) |
+| --- | --- | --- | --- | --- |
+| **`MOSS-Image`** | `int8_convrot` + `W4A8`, `25` steps | `375.28s` cold · `50.75s` warm | `103.45s` cold · `20.01s` warm | **`29.53s`** cold (`12.7×`) · **`18.27s`** warm (`2.78×`) |
+| **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | `209.29s` cold · `179.84s` warm | **`186.08s`** cold (`2.15×`) · **`160.25s`** warm (`9.87×`) |
+| **`MiniMax H3 Ref2VA` (10s / 243f)** | `1344×768`, `4`-step Turbo *(with `comfy-aimdo-xpu#37` + `TORCH_CACHE_TRIM`; optional `ComfyUI-Ref2VA-VSA` for `sol-attn`)* | — *(not tested)* | — | **`490.49s`** dense · **`342.62s`** (`sol-attn`, `v0.2.7+`) *(vs `359.05s` pre-`v0.2.7`, `530.62s` pre-fix; `rel=0` VBAR)* |
+| **`LTX-2.5 T2V` (22B, 5s / 121f)** | `int8_convrot` (`LTXAV` + `Gemma 4 12B`), `1280×704`, `8+3` distilled steps, `VAEDecodeTiled [512, 64, 64, 16]` | — *(not tested)* | — | **`107.99s`** cold · **`67.26s`** warm *(cached TE, `v0.2.8`; `69.04s` pre-`na3d_eager`)* |
+| **`LTX-2.5 T2V` (22B, short / high-res)** | `int8_convrot`, `8+3` steps (`q=1456→5824` short · `q=8160→32640` high-res) | — *(not tested)* | — | **`26.79s`** warm (`66.66s` cold, `39.64s–47.56s` new prompt) · **`175.63s`** warm (`213.97s` cold, high-res) |
+| **`Qwen Image 2.1 T2I`** | `int8_convrot`, `1024×1024`, `25` steps | — *(not tested)* | `22.48s` cold · `12.58s` warm | **`21.51s`** cold · **`11.38s`** warm |
+| **`Z-Image Turbo`** | `bf16`, `1024×1024`, `8` steps | — *(not tested)* | — | **`33.41s`** cold · **`5.19s`–`5.27s`** warm |
+| **`WAN 2.2 T2V 14B` (4-step LightX2V)** | `fp8_scaled` + `lightx2v` LoRA, `4` steps (`2+2`), `cfg=1.0` | — *(not tested)* | `104.37s` cold | **`93.09s`** cold · **`82.62s`** warm |
+| **`WAN 2.2 T2V 14B` (Standard 20-step)** | `fp8_scaled`, `20` steps (`10+10`), `cfg=3.5` *(template default, LoRA bypassed)* | — *(not tested)* | `777.00s` | **`685.00s`–`696.00s`** |
+
+<sub>**`cold`** = first run (loading models from disk + XPU/kernel warmup) · **`warm` (hot)** = subsequent runs with models/caches already loaded. Full tables and sample outputs in [`benchmarks/README.md`](./benchmarks/README.md).</sub>
+
+---
+
+## 2. Prerequisite (Required)
 
 Your Windows ComfyUI environment **must** already have **Windows 11 x64**, **Python `3.13`**, and **`torch==2.13.0+xpu`** installed:
 
@@ -34,7 +51,7 @@ Your Windows ComfyUI environment **must** already have **Windows 11 x64**, **Pyt
 
 ---
 
-## 2. Installation
+## 3. Installation
 
 Choose **one** of the options below (you do **not** need to run multiple options).
 
@@ -67,7 +84,7 @@ Per **Comfy Registry security standards**, Registry packages exclude prebuilt `.
 
 ---
 
-## 3. Required / Recommended Flags & Environment Setup
+## 4. Required / Recommended Flags & Environment Setup
 
 After installing, configure these two Windows settings for full performance:
 
@@ -97,7 +114,7 @@ Restart ComfyUI / Comfy Desktop after changing environment variables or `launchA
 
 ---
 
-## 4. Verify Installation
+## 5. Verify Installation
 
 Add the **`OmniXPU Status`** node to any workflow, or check `<ComfyUI>\user\comfyui.log` in PowerShell:
 
@@ -124,7 +141,7 @@ DynamicVRAM support detected and enabled
 
 ---
 
-## 5. Workflow Compatibility (Using the XPU Kernels)
+## 6. Workflow Compatibility (Using the XPU Kernels)
 
 Having `torch==2.13.0+xpu`, `omni_xpu_kernel`, and `DynamicVRAM` installed is only half the setup — **your workflow also needs to hit native XPU paths** instead of emulated formats or CUDA-only custom nodes:
 
@@ -133,26 +150,6 @@ Having `torch==2.13.0+xpu`, `omni_xpu_kernel`, and `DynamicVRAM` installed is on
 - **Live diagnostics ([`ComfyUI-XPU-Advisor`](https://github.com/wildersa/ComfyUI-XPU-Advisor)):** Install our companion advisor extension to get live UI alerts whenever a workflow loads emulated FP8 weights, triggers Shared GPU Memory spills, or hits CUDA-only fallbacks.
 
 See **[`WORKFLOW_COMPATIBILITY.md`](./WORKFLOW_COMPATIBILITY.md)** for the full workflow checklist and verification steps.
-
----
-
-## 6. Benchmarks & Telemetry
-
-Measured on **Windows 11 (`Intel Arc Pro B70`, `32 GB`, `torch==2.13.0+xpu`)** comparing **Stock ComfyUI (OOTB)** (out-of-the-box, no extension, `DynamicVRAM` off) against **`ComfyUI-Intel-Arc-XPU`** (`--enable-dynamic-vram`):
-
-| Model | Config | Stock ComfyUI (OOTB) | With Extension (`torch`) | With Extension (`cute`) |
-| --- | --- | --- | --- | --- |
-| **`MOSS-Image`** | `int8_convrot` + `W4A8`, `25` steps | `375.28s` cold · `50.75s` warm | `103.45s` cold · `20.01s` warm | **`29.53s`** cold (`12.7×`) · **`18.27s`** warm (`2.78×`) |
-| **`MiniMax H3 Ref2VA`** | `int8_convrot` + `NVFP4`, `20` steps | `399.91s` cold · `1582.00s` warm | `209.29s` cold · `179.84s` warm | **`186.08s`** cold (`2.15×`) · **`160.25s`** warm (`9.87×`) |
-| **`MiniMax H3 Ref2VA` (10s / 243f)** | `1344×768`, `4`-step Turbo *(with `comfy-aimdo-xpu#37` + `TORCH_CACHE_TRIM`; optional `ComfyUI-Ref2VA-VSA` for `sol-attn`)* | — *(not tested)* | — | **`490.49s`** dense · **`342.62s`** (`sol-attn`, `v0.2.7+`) *(vs `359.05s` pre-`v0.2.7`, `530.62s` pre-fix; `rel=0` VBAR)* |
-| **`LTX-2.5 T2V` (22B, 5s / 121f)** | `int8_convrot` (`LTXAV` + `Gemma 4 12B`), `1280×704`, `8+3` distilled steps, `VAEDecodeTiled [512, 64, 64, 16]` | — *(not tested)* | — | **`107.99s`** cold · **`67.26s`** warm *(cached TE, `v0.2.8`; `69.04s` pre-`na3d_eager`)* |
-| **`LTX-2.5 T2V` (22B, short / high-res)** | `int8_convrot`, `8+3` steps (`q=1456→5824` short · `q=8160→32640` high-res) | — *(not tested)* | — | **`26.79s`** warm (`66.66s` cold, `39.64s–47.56s` new prompt) · **`175.63s`** warm (`213.97s` cold, high-res) |
-| **`Qwen Image 2.1 T2I`** | `int8_convrot`, `1024×1024`, `25` steps | — *(not tested)* | `22.48s` cold · `12.58s` warm | **`21.51s`** cold · **`11.38s`** warm |
-| **`Z-Image Turbo`** | `bf16`, `1024×1024`, `8` steps | — *(not tested)* | — | **`33.41s`** cold · **`5.19s`–`5.27s`** warm |
-| **`WAN 2.2 T2V 14B` (4-step LightX2V)** | `fp8_scaled` + `lightx2v` LoRA, `4` steps (`2+2`), `cfg=1.0` | — *(not tested)* | `104.37s` cold | **`93.09s`** cold · **`82.62s`** warm |
-| **`WAN 2.2 T2V 14B` (Standard 20-step)** | `fp8_scaled`, `20` steps (`10+10`), `cfg=3.5` *(template default, LoRA bypassed)* | — *(not tested)* | `777.00s` | **`685.00s`–`696.00s`** |
-
-<sub>**`cold`** = first run (loading models from disk + XPU/kernel warmup) · **`warm` (hot)** = subsequent runs with models/caches already loaded. Full tables and sample outputs in [`benchmarks/README.md`](./benchmarks/README.md).</sub>
 
 ---
 
