@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-intel-arc-xpu"
-description = "Speed up ComfyUI and prevent Out-of-Memory crashes on Intel Arc graphics cards (Windows). Adds plug-and-play Intel GPU acceleration (XPU) + DynamicVRAM with no core edits. Note: Registry installs require a one-time wheel setup (.\\install.ps1 / install.py on Python 3.13 + torch==2.13.0+xpu) and --enable-dynamic-vram --reserve-vram 1 (or 2 with display); read https://github.com/wildersa/ComfyUI-Intel-Arc-XPU first."
+description = "MANDATORY: Read the full README at https://github.com/wildersa/ComfyUI-Intel-Arc-XPU before using. New Comfy Registry installs require a one-time native Windows XPU wheel setup (.\\install.ps1 / install.py on Python 3.13 + torch==2.13.0+xpu) and --enable-dynamic-vram --reserve-vram 1 (or 2 with display). Updating from v0.2.x only requires updating this node and restarting ComfyUI — no wheel reinstall needed."
 version = "0.2.9"
 requires-python = ">=3.13,<3.14"
 license = { file = "LICENSE" }
@@ -11,7 +11,7 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
 ]
-keywords = ["comfyui", "intel", "intel-arc", "intel-gpu", "xpu", "bmg", "dynamicvram", "omnixpu"]
+keywords = ["comfyui", "intel", "arc", "xpu", "bmg", "dynamicvram", "omnixpu"]
 
 [project.urls]
 Repository = "https://github.com/wildersa/ComfyUI-Intel-Arc-XPU"
